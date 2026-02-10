@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  roboflow-ppe-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: roboflow-ppe-detection
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      NODE_ENV: ${NODE_ENV:-production}
+      VIDEO_FILE: ${VIDEO_FILE:-./fixed_street_vehicles_people.mp4}
+      ROBOFLOW_API_KEY: ${ROBOFLOW_API_KEY}
+      ROBOFLOW_MODEL: ${ROBOFLOW_MODEL:-ppe-4-zrtqx}
+      ROBOFLOW_VERSION: ${ROBOFLOW_VERSION:-2}
+      ROBOFLOW_CONFIDENCE: ${ROBOFLOW_CONFIDENCE:-0.5}
+      ROBOFLOW_OVERLAP: ${ROBOFLOW_OVERLAP:-0.5}
+    volumes:
+      - ./fixed_street_vehicles_people.mp4:/app/fixed_street_vehicles_people.mp4:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - ppe-network
+    stdin_open: true
+    tty: true
+
+  # Optional: Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: ppe-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - roboflow-ppe-app
+    networks:
+      - ppe-network
+    restart: unless-stopped
+
+networks:
+  ppe-network:
+    driver: bridge
+
+volumes:
+  logs:

@@ -1,0 +1,170 @@
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║     PPE DETECTION SYSTEM - HOW TO START VIDEO STREAM         ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+
+QUICK START (Recommended)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+From the project root directory, run:
+
+    ./start.sh all
+
+This will automatically:
+  ✅ Install dependencies (if needed)
+  ✅ Start backend server on port 3001
+  ✅ Start frontend UI on port 5173
+  ✅ Send video to Google Vision AI (optional)
+
+Then open your browser: http://localhost:5173
+
+
+MANUAL START (If you prefer separate terminals)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Terminal 1 - Backend Server:
+    ./start.sh backend
+
+Terminal 2 - Frontend UI:
+    ./start.sh frontend
+
+Terminal 3 - Send Video to Vision AI (optional):
+    ./start.sh vision-ai
+
+
+INDIVIDUAL COMMANDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Backend only:
+    npm install
+    node server.js
+
+Frontend only:
+    cd vision-ui
+    npm install
+    npm run dev
+
+Vision AI (if you have vaictl installed):
+    export PROJECT_ID=sensitive-detection
+    export LOCATION_ID=us-central1
+    nohup vaictl -p $PROJECT_ID -l $LOCATION_ID \
+      -c application-cluster-0 \
+      --service-endpoint visionai.googleapis.com \
+      send video-file to streams 'traffic-stream' \
+      --file-path ./fixed_street_vehicles_people.h264 --loop &
+
+
+WHAT TO EXPECT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Backend server will start on port 3001
+   - Logs: "🎥 Backend listening on port 3001"
+   - Check health: curl http://localhost:3001/health
+
+2. Frontend will start on port 5173
+   - Opens Vue 3 dashboard with 3 tabs
+   - "Live Stream" tab shows video player
+
+3. Video playback
+   - Click "Live Stream" tab to see video
+   - Video should start playing from backend /video endpoint
+
+4. PPE Detection overlays (if Vision AI is running)
+   - Canvas overlay on top of video
+   - Red boxes = high confidence violations (>80%)
+   - Orange boxes = medium confidence
+   - Shows: Person ID, missing PPE, confidence %
+
+5. Violation alerts
+   - "Violations" tab shows real-time feed
+   - Updates as PPE violations are detected
+
+
+REQUIRED VIDEO FILE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Default location: ./fixed_street_vehicles_people.h264
+Alternative:     ./fixed_street_vehicles_people.mp4
+
+If not found, specify path:
+    export VIDEO_FILE="/path/to/your/video.h264"
+    node server.js
+
+Supported formats:
+  - H.264 (.h264, .mp4)
+  - Any format playable in HTML5 <video> tag
+
+
+TROUBLESHOOTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Video not playing?
+  - Check video file exists: ls -lh fixed_street_vehicles_people.h264
+  - Check backend is running: curl http://localhost:3001/health
+  - Check browser console (F12) for errors
+
+No annotations showing?
+  - Make sure Vision AI stream is running
+  - Check WebSocket connection in DevTools
+  - Verify Pub/Sub messages being published
+
+Ports already in use?
+  - Backend (3001): lsof -i :3001 | kill -9 <PID>
+  - Frontend (5173): lsof -i :5173 | kill -9 <PID>
+
+npm install fails?
+  - Clear cache: npm cache clean --force
+  - Try again: npm install
+
+
+ENVIRONMENT VARIABLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+VIDEO_FILE
+  Default: ./fixed_street_vehicles_people.h264
+  Purpose: Path to video file for streaming
+
+PORT
+  Default: 3001
+  Purpose: Backend server port
+
+PROJECT_ID (Vision AI)
+  Default: sensitive-detection
+  Purpose: Google Cloud project ID
+
+LOCATION_ID (Vision AI)
+  Default: us-central1
+  Purpose: Cloud region for Vision AI
+
+
+NEXT STEPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Run: ./start.sh all
+2. Wait for output showing all services started
+3. Open: http://localhost:5173
+4. Click "Live Stream" tab to see video
+5. Monitor "Violations" tab for PPE alerts
+
+
+GETTING HELP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+View detailed docs:
+  - ./start.sh help          - Command reference
+  - VIDEO_STREAMING.md       - Architecture details
+  - SETUP_GUIDE.md          - Full setup guide
+  - vision-ui/README.md     - Frontend documentation
+
+View logs:
+  - Backend: Monitor terminal running "node server.js"
+  - Frontend: Monitor terminal running "npm run dev"
+  - Vision AI: tail -f traffic-stream.log
+
+
+═══════════════════════════════════════════════════════════════
+
+Ready to go! Run: ./start.sh all
+
+═══════════════════════════════════════════════════════════════

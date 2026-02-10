@@ -1,0 +1,26 @@
+graph {
+  name: "traffic_app"
+
+  node {
+    name: "input_stream"
+    calculator: "StreamInputCalculator"
+    output_stream: "VIDEO:input_video"
+  }
+
+  node {
+    name: "object_detector"
+    calculator: "VisionObjectDetectorCalculator"
+    input_stream: "VIDEO:input_video"
+    output_stream: "DETECTIONS:detections"
+  }
+
+  node {
+    name: "visualizer"
+    calculator: "BoundingBoxVisualizerCalculator"
+    input_stream: "VIDEO:input_video"
+    input_stream: "DETECTIONS:detections"
+    output_stream: "VIDEO:output_video"
+  }
+
+  output_stream: "VIDEO:output_video"
+}
