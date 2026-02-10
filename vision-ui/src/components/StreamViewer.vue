@@ -2,6 +2,7 @@
 import { ref, onMounted } from "vue";
 import socket from "../services/socket";
 
+const imageElement = ref(null);
 const canvasElement = ref(null);
 const streamStatus = ref("connecting");
 const displayedAnnotations = ref([]);
@@ -9,13 +10,14 @@ const isProcessing = ref(false);
 const processingError = ref("");
 const detectionCount = ref(0);
 const lastDetectionTime = ref(null);
+const sourceType = ref(""); // camera or video
 
-// Canvas dimensions
-const canvasWidth = ref(1280);
-const canvasHeight = ref(720);
+// Canvas dimensions - will match image size
+const canvasWidth = ref(640);
+const canvasHeight = ref(480);
 
 const statusText = {
-  connected: "Connected - Real-time Roboflow Detections",
+  connected: "Connected - Real-time Helmet & Glove Detection",
   connecting: "Connecting to backend...",
   reconnecting: "Reconnecting...",
   disconnected: "Connection Lost"
@@ -32,7 +34,7 @@ onMounted(() => {
   checkProcessingStatus();
   setInterval(checkProcessingStatus, 2000);
   
-  // Auto-draw annotations
+  // Start rendering detections
   startRenderLoop();
 });
 
@@ -60,34 +62,18 @@ const handleStreamError = () => {
 };
 
 const drawAnnotations = () => {
-  if (!canvasElement.value) return;
+  if (!canvasElement.value || !imageElement.value) return;
   
   const canvas = canvasElement.value;
+  const img = imageElement.value;
   const ctx = canvas.getContext("2d");
   
-  // Set canvas size
-  canvas.width = canvasWidth.value;
-  canvas.height = canvasHeight.value;
+  // Set canvas size to match image
+  canvas.width = img.width;
+  canvas.height = img.height;
   
-  // Draw background
-  ctx.fillStyle = "#1a1a1a";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  
-  // Draw grid pattern for visual reference
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 10; i++) {
-    const x = (canvas.width / 10) * i;
-    const y = (canvas.height / 10) * i;
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, canvas.height);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(canvas.width, y);
-    ctx.stroke();
-  }
+  // Clear canvas
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   
   // Draw each annotation
   displayedAnnotations.value.forEach((annotation) => {
@@ -108,9 +94,9 @@ const drawAnnotations = () => {
     ctx.strokeRect(x, y, width, height);
     
     // Draw label background
-    const label = `${annotation.type} - ${annotation.frame}`;
+    const label = `${annotation.type}`;
     ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
-    ctx.font = "bold 13px Arial";
+    ctx.font = "bold 14px Arial";
     const textWidth = ctx.measureText(label).width;
     ctx.fillRect(x, y - 28, textWidth + 10, 24);
     
@@ -125,9 +111,9 @@ const drawAnnotations = () => {
     ctx.fillText(confidenceText, x + 5, y + height + 18);
   });
   
-  // Draw info panel at top
+  // Draw stats panel
   ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-  ctx.fillRect(0, 0, 400, 80);
+  ctx.fillRect(0, 0, 300, 80);
   
   ctx.fillStyle = "#fff";
   ctx.font = "bold 16px Arial";
@@ -148,12 +134,6 @@ const drawAnnotations = () => {
     ctx.fillStyle = "#fff";
     ctx.font = "bold 14px Arial";
     ctx.fillText("🔴 PROCESSING LIVE", canvas.width - 170, 30);
-  } else {
-    ctx.fillStyle = "rgba(100, 100, 100, 0.8)";
-    ctx.fillRect(canvas.width - 180, 10, 170, 30);
-    ctx.fillStyle = "#aaa";
-    ctx.font = "bold 14px Arial";
-    ctx.fillText("⚫ IDLE", canvas.width - 170, 30);
   }
 };
 
@@ -175,6 +155,7 @@ const startProcessing = async () => {
 
     if (response.ok) {
       const data = await response.json();
+      sourceType.value = data.source || "unknown";
       isProcessing.value = true;
       console.log("✅ Processing started:", data);
     } else {
@@ -313,20 +294,33 @@ const setupAnnotationListener = () => {
         <span class="detection-count">
           <i class="fas fa-shield-alt"></i> {{ detectionCount }} Detections
         </span>
+        <span v-if="sourceType" class="source-badge" :class="sourceType">
+          <i :class="sourceType === 'camera' ? 'fas fa-video' : 'fas fa-film'"></i>
+          {{ sourceType === 'camera' ? '📷 LIVE CAMERA' : '🎬 VIDEO FILE' }}
+        </span>
       </div>
       <div v-if="processingError" class="error-message">
         <i class="fas fa-exclamation-circle"></i> {{ processingError }}
       </div>
     </div>
 
-    <!-- Canvas Display -->
+    <!-- Stream Display -->
     <div class="canvas-wrapper">
-      <canvas 
-        ref="canvasElement"
-        class="detection-canvas"
-        :width="canvasWidth"
-        :height="canvasHeight"
-      ></canvas>
+      <div class="stream-container">
+        <!-- MJPEG Stream from backend -->
+        <img 
+          ref="imageElement"
+          src="http://localhost:3001/stream"
+          alt="Live Camera Stream"
+          class="stream-image"
+          @load="drawAnnotations"
+        />
+        <!-- Canvas overlay for detections -->
+        <canvas 
+          ref="canvasElement"
+          class="detection-canvas"
+        ></canvas>
+      </div>
     </div>
 
     <!-- Live Detections List -->
@@ -493,6 +487,26 @@ const setupAnnotationListener = () => {
   color: #6b7280;
 }
 
+.source-badge {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.source-badge.camera {
+  background: #fca5a5;
+  color: #7f1d1d;
+}
+
+.source-badge.video {
+  background: #a5f3fc;
+  color: #0c4a6e;
+}
+
 .detection-count {
   padding: 6px 12px;
   background: #f0fdf4;
@@ -521,13 +535,29 @@ const setupAnnotationListener = () => {
   justify-content: center;
   align-items: center;
   overflow: auto;
-  max-height: 600px;
+  max-height: 700px;
+  min-height: 400px;
+}
+
+.stream-container {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.stream-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
 }
 
 .detection-canvas {
-  max-width: 100%;
-  height: auto;
-  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  cursor: crosshair;
+  border-radius: 4px;
 }
 
 .detections-panel {

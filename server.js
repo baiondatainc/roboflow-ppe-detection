@@ -20,8 +20,19 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Add CSP headers to allow inline scripts and eval
+app.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' ws: wss:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: ws: wss: http://localhost:*;"
+  );
+  next();
+});
+
 const PORT = process.env.PORT || 3001;
 const VIDEO_FILE = process.env.VIDEO_FILE || "./ppe-upload-video-new1.mp4";
+const USE_CAMERA = process.env.USE_CAMERA === "true" || false;
+const CAMERA_DEVICE = process.env.CAMERA_DEVICE || "/dev/video0";
 
 const ROBOFLOW_API_KEY = process.env.ROBOFLOW_API_KEY;
 const ROBOFLOW_MODEL = process.env.ROBOFLOW_MODEL;
@@ -43,9 +54,19 @@ const server = app.listen(PORT, "127.0.0.1", () => {
 ║      🛡️  ROBOFLOW PPE DETECTION BACKEND (READY)              ║
 ╚══════════════════════════════════════════════════════════════╝
 🚀 http://127.0.0.1:${PORT}
-📹 Video: ${VIDEO_FILE}
+📹 Source: ${USE_CAMERA ? "📷 Camera " + CAMERA_DEVICE : "🎬 Video File: " + VIDEO_FILE}
 🎯 Model: ${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}
+🔍 Detection: Helmets & Gloves
 `);
+
+  // Auto-start processing if enabled
+  const AUTO_START = process.env.AUTO_START_PROCESSING === "true";
+  if (AUTO_START) {
+    setTimeout(() => {
+      console.log("\n⚙️  AUTO_START enabled - starting processing...");
+      startProcessingInternal();
+    }, 1000);
+  }
 });
 
 /* ---------------- WEBSOCKETS ---------------- */
@@ -102,7 +123,7 @@ app.post("/debug/test-roboflow", async (_, res) => {
     console.log("\n🧪 TEST ENDPOINT - Roboflow API Debug");
     console.log("=" .repeat(60));
     console.log(`📸 Frame Size: ${imageBuffer.length} bytes`);
-    console.log(`🔑 API Key: ${ROBOFLOW_API_KEY}`);
+    console.log(`🔑 API Key: ${ROBOFLOW_API_KEY ? "***" + ROBOFLOW_API_KEY.slice(-4) : "NOT SET"}`);
     console.log(`📊 Model: ${ROBOFLOW_MODEL}`);
     console.log(`📌 Version: ${ROBOFLOW_VERSION}`);
     console.log(`🎯 Confidence: ${CONFIDENCE}`);
@@ -146,47 +167,92 @@ app.post("/debug/test-roboflow", async (_, res) => {
         success: true,
         message: "Roboflow API test successful",
         predictions: response.data.predictions || [],
-        frameSize: imageBuffer.length
+        frameSize: imageBuffer.length,
+        modelUsed: url,
+        predictionCount: (response.data.predictions || []).length
       });
     } catch (error) {
-      console.error("❌ API Error:", {
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        message: error.message
-      });
+      console.error("❌ API Error Details:");
+      console.error("  Status:", error.response?.status);
+      console.error("  Status Text:", error.response?.statusText);
+      console.error("  Error Data:", error.response?.data);
+      console.error("  Message:", error.message);
       
       res.status(error.response?.status || 500).json({
         success: false,
         error: error.response?.data || error.message,
-        url: url
+        url: url,
+        hint: error.response?.status === 401 ? "Invalid API key or no access to model" : 
+              error.response?.status === 404 ? "Model not found - check model path" :
+              "Check API key and model configuration"
       });
     }
   });
 });
 
-/* ---------------- START PROCESSING ---------------- */
+/* ---------------- DEBUG: VERIFY API CONFIGURATION ---------------- */
 
-app.post("/api/start-processing", (_, res) => {
+app.get("/debug/config", (_, res) => {
+  res.json({
+    apiKeySet: !!ROBOFLOW_API_KEY,
+    apiKeyPreview: ROBOFLOW_API_KEY ? "***" + ROBOFLOW_API_KEY.slice(-4) : "NOT SET",
+    model: ROBOFLOW_MODEL,
+    version: ROBOFLOW_VERSION,
+    modelUrl: `https://detect.roboflow.com/${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`,
+    confidence: CONFIDENCE,
+    overlap: OVERLAP,
+    useCamera: USE_CAMERA,
+    cameraDevice: CAMERA_DEVICE,
+    videoFile: VIDEO_FILE,
+    videoExists: fs.existsSync(VIDEO_FILE)
+  });
+});
+
+/* ---------------- PROCESSING CORE LOGIC ---------------- */
+
+function startProcessingInternal() {
   if (isProcessingVideo) {
-    return res.status(400).json({ error: "Already running" });
+    console.warn("⚠️  Processing already running");
+    return;
   }
 
-  if (!fs.existsSync(VIDEO_FILE)) {
-    return res.status(400).json({ error: "Video not found" });
+  // Check source availability
+  if (!USE_CAMERA && !fs.existsSync(VIDEO_FILE)) {
+    console.error("❌ Video file not found:", VIDEO_FILE);
+    return;
   }
 
   isProcessingVideo = true;
   frameCount = 0;
 
-  ffmpegProcess = spawn("ffmpeg", [
-    "-i", VIDEO_FILE,
-    "-vf", "fps=1",
-    "-f", "image2pipe",
-    "-vcodec", "mjpeg",
-    "-q:v", "2",
-    "-"
-  ]);
+  let ffmpegArgs;
+  
+  if (USE_CAMERA) {
+    // Camera streaming
+    ffmpegArgs = [
+      "-f", "v4l2",
+      "-i", CAMERA_DEVICE,
+      "-vf", "fps=2",
+      "-f", "image2pipe",
+      "-vcodec", "mjpeg",
+      "-q:v", "2",
+      "-"
+    ];
+    console.log("📷 Starting camera capture from", CAMERA_DEVICE);
+  } else {
+    // Video file
+    ffmpegArgs = [
+      "-i", VIDEO_FILE,
+      "-vf", "fps=1",
+      "-f", "image2pipe",
+      "-vcodec", "mjpeg",
+      "-q:v", "2",
+      "-"
+    ];
+    console.log("🎬 Starting video file processing");
+  }
+
+  ffmpegProcess = spawn("ffmpeg", ffmpegArgs);
 
   let buffer = Buffer.alloc(0);
 
@@ -213,11 +279,22 @@ app.post("/api/start-processing", (_, res) => {
     }
   });
 
-  ffmpegProcess.on("close", () => {
+  ffmpegProcess.on("error", (err) => {
+    console.error("❌ FFmpeg error:", err.message);
     isProcessingVideo = false;
   });
 
-  res.json({ success: true });
+  ffmpegProcess.on("close", () => {
+    console.log("⏹️  Processing stopped");
+    isProcessingVideo = false;
+  });
+}
+
+/* ---------------- START PROCESSING ENDPOINT ---------------- */
+
+app.post("/api/start-processing", (_, res) => {
+  startProcessingInternal();
+  res.json({ success: true, source: USE_CAMERA ? "camera" : "video" });
 });
 
 /* ---------------- STOP PROCESSING ---------------- */
@@ -250,6 +327,209 @@ app.get("/stats", (_, res) => {
 });
 
 /* ---------------- VIDEO STREAMING ENDPOINT ---------------- */
+
+let cameraStream = null;
+
+app.get("/stream", (req, res) => {
+  res.setHeader("Content-Type", "multipart/x-mixed-replace; boundary=--boundary");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+
+  let ffmpegArgs;
+  
+  // Use camera if available, otherwise fall back to video file
+  if (USE_CAMERA && fs.existsSync(CAMERA_DEVICE)) {
+    ffmpegArgs = [
+      "-f", "v4l2",
+      "-i", CAMERA_DEVICE,
+      "-vf", "fps=10",
+      "-f", "mjpeg",
+      "-q:v", "5",
+      "-"
+    ];
+  } else {
+    // Fall back to video file
+    ffmpegArgs = [
+      "-i", VIDEO_FILE,
+      "-vf", "fps=5",
+      "-f", "mjpeg",
+      "-q:v", "5",
+      "-"
+    ];
+  }
+
+  // Start stream
+  if (!cameraStream) {
+    cameraStream = spawn("ffmpeg", ffmpegArgs);
+
+    cameraStream.on("error", (err) => {
+      console.error("❌ Stream error:", err.message);
+      cameraStream = null;
+    });
+
+    cameraStream.on("close", () => {
+      console.log("⏹️  Stream closed");
+      cameraStream = null;
+    });
+  }
+
+  let bufferData = Buffer.alloc(0);
+
+  const dataHandler = (chunk) => {
+    bufferData = Buffer.concat([bufferData, chunk]);
+    
+    const startMarker = Buffer.from([0xff, 0xd8]);
+    const endMarker = Buffer.from([0xff, 0xd9]);
+    
+    let startIdx = bufferData.indexOf(startMarker);
+    let endIdx = bufferData.indexOf(endMarker);
+    
+    while (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+      const frame = bufferData.slice(startIdx, endIdx + 2);
+      
+      res.write("--boundary\r\n");
+      res.write("Content-Type: image/jpeg\r\n");
+      res.write(`Content-Length: ${frame.length}\r\n\r\n`);
+      res.write(frame);
+      res.write("\r\n");
+      
+      bufferData = bufferData.slice(endIdx + 2);
+      startIdx = bufferData.indexOf(startMarker);
+      endIdx = bufferData.indexOf(endMarker);
+    }
+  };
+
+  cameraStream.stdout.on("data", dataHandler);
+
+  req.on("close", () => {
+    if (cameraStream) {
+      cameraStream.stdout.removeListener("data", dataHandler);
+    }
+  });
+});
+
+/* -------- DEBUG: DETAILED ROBOFLOW ANALYSIS -------- */
+
+app.post("/debug/analyze-roboflow", async (_, res) => {
+  if (!fs.existsSync(VIDEO_FILE)) {
+    return res.status(400).json({ error: "Video not found" });
+  }
+
+  console.log("\n" + "=".repeat(70));
+  console.log("🔬 ROBOFLOW API DETAILED ANALYSIS");
+  console.log("=".repeat(70));
+
+  const ffmpeg = spawn("ffmpeg", [
+    "-ss", "00:00:01",
+    "-i", VIDEO_FILE,
+    "-frames:v", "1",
+    "-f", "image2pipe",
+    "-vcodec", "mjpeg",
+    "-q:v", "2",
+    "-"
+  ]);
+
+  let imageBuffer = Buffer.alloc(0);
+
+  ffmpeg.stdout.on("data", chunk => {
+    imageBuffer = Buffer.concat([imageBuffer, chunk]);
+  });
+
+  ffmpeg.on("close", async () => {
+    const form = new FormData();
+    form.append("file", imageBuffer, {
+      filename: "frame.jpg",
+      contentType: "image/jpeg"
+    });
+
+    const url = `https://detect.roboflow.com/${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`;
+    
+    try {
+      console.log(`\n📊 Testing with different confidence levels:\n`);
+      
+      const confidenceLevels = [0.1, 0.2, 0.3, 0.5, 0.7];
+      const results = {};
+
+      for (const conf of confidenceLevels) {
+        const testForm = new FormData();
+        testForm.append("file", imageBuffer, {
+          filename: "frame.jpg",
+          contentType: "image/jpeg"
+        });
+
+        try {
+          const response = await axios.post(
+            url,
+            testForm,
+            {
+              params: {
+                api_key: ROBOFLOW_API_KEY,
+                confidence: conf,
+                overlap: 0.5
+              },
+              headers: {
+                ...testForm.getHeaders()
+              },
+              maxContentLength: Infinity,
+              maxBodyLength: Infinity,
+              timeout: 30000
+            }
+          );
+
+          const predictions = response.data.predictions || [];
+          results[conf] = predictions;
+          
+          console.log(`  Confidence ${conf}: ${predictions.length} detections`);
+          
+          if (predictions.length > 0) {
+            predictions.forEach((p, i) => {
+              console.log(`    [${i+1}] ${p.class} @ ${(p.confidence * 100).toFixed(1)}%`);
+            });
+          }
+        } catch (err) {
+          console.log(`  Confidence ${conf}: ERROR - ${err.message}`);
+        }
+      }
+
+      console.log("\n📋 Summary:");
+      console.log(`  Model: ${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`);
+      console.log(`  Frame Size: ${imageBuffer.length} bytes`);
+      console.log(`  API Response: ${Object.keys(results).length} tests completed`);
+      
+      const hasDetections = Object.values(results).some(preds => preds.length > 0);
+      console.log(`  Classes Found: ${hasDetections ? 'YES' : 'NONE'}`);
+      
+      if (hasDetections) {
+        const allClasses = new Set();
+        Object.values(results).forEach(preds => {
+          preds.forEach(p => allClasses.add(p.class));
+        });
+        console.log(`  Unique Classes: ${Array.from(allClasses).join(", ")}`);
+      }
+
+      console.log("\n" + "=".repeat(70));
+
+      res.json({
+        success: true,
+        frameSize: imageBuffer.length,
+        model: `${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`,
+        results: results,
+        hasDetections: hasDetections,
+        allClasses: hasDetections ? Array.from(new Set(
+          Object.values(results)
+            .flat()
+            .map(p => p.class)
+        )) : []
+      });
+    } catch (error) {
+      console.error("❌ Analysis Error:", error.message);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+});
 
 app.get("/video", (req, res) => {
   if (!fs.existsSync(VIDEO_FILE)) {
