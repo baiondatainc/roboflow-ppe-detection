@@ -74,40 +74,91 @@ const drawAnnotations = () => {
   // Clear canvas
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   
+  // Color mapping for different PPE types
+  const colorMap = {
+    head: "#FF6B6B",           // Red
+    hand: "#4ECDC4",           // Teal
+    vest: "#FFE66D",           // Yellow
+    helmet: "#95E1D3",         // Mint
+    gloves: "#A8E6CF",         // Light Green
+    safety_vest: "#FFD3B6",    // Peach
+    person: "#FFAAA5"          // Light Red
+  };
+  
+  // Helper function to get color based on type
+  const getTypeColor = (type) => {
+    const lowerType = type.toLowerCase();
+    for (const [key, color] of Object.entries(colorMap)) {
+      if (lowerType.includes(key)) return color;
+    }
+    return "#f59e0b"; // Default
+  };
+  
   // Draw each annotation
   displayedAnnotations.value.forEach((annotation) => {
     if (!annotation.boundingBox) return;
     
     const box = annotation.boundingBox;
-    const x = (box.x / 100) * canvas.width;
-    const y = (box.y / 100) * canvas.height;
-    const width = (box.width / 100) * canvas.width;
-    const height = (box.height / 100) * canvas.height;
+    const x = box.x - box.width / 2;
+    const y = box.y - box.height / 2;
+    const width = box.width;
+    const height = box.height;
     
-    // Color based on confidence
-    const color = annotation.confidence > 0.8 ? "#ef4444" : "#f59e0b";
+    // Get color based on type (with fallback to confidence)
+    const color = getTypeColor(annotation.type);
     
-    // Draw bounding box
+    // Draw bounding box with thicker line
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
     ctx.strokeRect(x, y, width, height);
     
-    // Draw label background
+    // Draw corner markers for better visibility
+    const cornerSize = 8;
+    ctx.fillStyle = color;
+    // Top-left
+    ctx.fillRect(x, y, cornerSize, cornerSize);
+    ctx.fillRect(x, y, cornerSize * 2, 2);
+    ctx.fillRect(x, y, 2, cornerSize * 2);
+    // Top-right
+    ctx.fillRect(x + width - cornerSize, y, cornerSize, cornerSize);
+    ctx.fillRect(x + width - cornerSize * 2, y, cornerSize * 2, 2);
+    ctx.fillRect(x + width - 2, y, 2, cornerSize * 2);
+    // Bottom-left
+    ctx.fillRect(x, y + height - cornerSize, cornerSize, cornerSize);
+    ctx.fillRect(x, y + height - 2, cornerSize * 2, 2);
+    ctx.fillRect(x, y + height - cornerSize * 2, 2, cornerSize * 2);
+    // Bottom-right
+    ctx.fillRect(x + width - cornerSize, y + height - cornerSize, cornerSize, cornerSize);
+    ctx.fillRect(x + width - cornerSize * 2, y + height - 2, cornerSize * 2, 2);
+    ctx.fillRect(x + width - 2, y + height - cornerSize * 2, 2, cornerSize * 2);
+    
+    // Draw label background with type-specific styling
     const label = `${annotation.type}`;
-    ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+    ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
     ctx.font = "bold 14px Arial";
     const textWidth = ctx.measureText(label).width;
-    ctx.fillRect(x, y - 28, textWidth + 10, 24);
+    const labelHeight = 28;
+    ctx.fillRect(x, y - labelHeight, textWidth + 10, labelHeight);
+    
+    // Draw colored border for label
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y - labelHeight, textWidth + 10, labelHeight);
     
     // Draw label text
     ctx.fillStyle = color;
     ctx.fillText(label, x + 5, y - 9);
     
-    // Draw confidence percentage
+    // Draw confidence percentage with background
     const confidenceText = `${(annotation.confidence * 100).toFixed(1)}%`;
-    ctx.fillStyle = color;
+    ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
     ctx.font = "bold 12px Arial";
-    ctx.fillText(confidenceText, x + 5, y + height + 18);
+    const confWidth = ctx.measureText(confidenceText).width;
+    ctx.fillRect(x, y + height + 5, confWidth + 6, 18);
+    
+    // Draw confidence value
+    ctx.fillStyle = color;
+    ctx.fillText(confidenceText, x + 3, y + height + 18);
   });
   
   // Draw stats panel
