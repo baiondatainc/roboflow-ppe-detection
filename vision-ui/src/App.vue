@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from "vue";
 import StreamViewer from "./components/StreamViewer.vue";
+import WebcamViewer from "./components/WebcamViewer.vue";
 import ViolationFeed from "./components/ViolationFeed.vue";
 import Dashboard from "./components/Dashboard.vue";
 
@@ -29,10 +30,16 @@ const activeTab = ref("dashboard");
         <i class="fas fa-chart-line"></i> Dashboard
       </button>
       <button 
+        :class="['nav-btn', { active: activeTab === 'webcam' }]"
+        @click="activeTab = 'webcam'"
+      >
+        <i class="fas fa-video"></i> Webcam
+      </button>
+      <button 
         :class="['nav-btn', { active: activeTab === 'stream' }]"
         @click="activeTab = 'stream'"
       >
-        <i class="fas fa-video"></i> Live Stream
+        <i class="fas fa-film"></i> Live Stream
       </button>
       <button 
         :class="['nav-btn', { active: activeTab === 'alerts' }]"
@@ -46,6 +53,9 @@ const activeTab = ref("dashboard");
     <main class="app-main">
       <div v-show="activeTab === 'dashboard'" class="tab-content">
         <Dashboard />
+      </div>
+      <div v-show="activeTab === 'webcam'" class="tab-content">
+        <WebcamViewer />
       </div>
       <div v-show="activeTab === 'stream'" class="tab-content">
         <StreamViewer />
