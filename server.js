@@ -27,9 +27,17 @@ const ROBOFLOW_API_KEY = process.env.ROBOFLOW_API_KEY;
 const ROBOFLOW_MODEL = process.env.ROBOFLOW_MODEL;
 const ROBOFLOW_VERSION = process.env.ROBOFLOW_VERSION;
 
-const CONFIDENCE = parseFloat(process.env.ROBOFLOW_CONFIDENCE || "0.5");
-const OVERLAP = parseFloat(process.env.ROBOFLOW_OVERLAP || "0.5");
-const FRAME_SAMPLE_RATE = parseInt(process.env.FRAME_SAMPLE_RATE || "1");
+// IMPROVED: Better default confidence and reduced overlap for better detection
+const CONFIDENCE = parseFloat(process.env.ROBOFLOW_CONFIDENCE || "0.4");
+const OVERLAP = parseFloat(process.env.ROBOFLOW_OVERLAP || "0.3");
+
+// IMPROVED: Process every 2nd frame to reduce API calls while maintaining responsiveness
+const FRAME_SAMPLE_RATE = parseInt(process.env.FRAME_SAMPLE_RATE || "2");
+
+// IMPROVED: Frame queue for non-blocking processing
+const MAX_QUEUE_SIZE = 3;
+let processingQueue = [];
+let isProcessingFrame = false;
 
 let ffmpegProcess = null;
 let isProcessingVideo = false;
@@ -40,16 +48,22 @@ let isProcessingWebcam = false;
 let webcamFrameCount = 0;
 let webcamClients = new Set();
 
+// IMPROVED: Add frame dimension tracking
+let frameWidth = 640;
+let frameHeight = 480;
+
 /* ---------------- SERVER ---------------- */
 
 const server = app.listen(PORT, "127.0.0.1", () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║      🛡️  ROBOFLOW PPE DETECTION BACKEND (READY)              ║
+║      🛡️  ROBOFLOW PPE DETECTION BACKEND (IMPROVED)           ║
 ╚══════════════════════════════════════════════════════════════╝
 🚀 http://127.0.0.1:${PORT}
 📹 Video: ${VIDEO_FILE}
 🎯 Model: ${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}
+⚡ Confidence: ${CONFIDENCE} | Overlap: ${OVERLAP}
+🔄 Frame Sample Rate: 1/${FRAME_SAMPLE_RATE}
 `);
 });
 
@@ -60,13 +74,34 @@ const clients = new Set();
 
 wss.on("connection", ws => {
   clients.add(ws);
-  ws.on("close", () => clients.delete(ws));
+  console.log(`✅ WebSocket client connected. Total: ${clients.size}`);
+  
+  ws.on("close", () => {
+    clients.delete(ws);
+    console.log(`❌ WebSocket client disconnected. Total: ${clients.size}`);
+  });
+  
+  ws.on("error", (error) => {
+    console.error("WebSocket error:", error);
+  });
 });
 
 function broadcast(data) {
+  const message = JSON.stringify(data);
+  let successCount = 0;
+  
   clients.forEach(ws => {
-    if (ws.readyState === 1) ws.send(JSON.stringify(data));
+    if (ws.readyState === 1) {
+      try {
+        ws.send(message);
+        successCount++;
+      } catch (error) {
+        console.error("Error broadcasting to client:", error);
+      }
+    }
   });
+  
+  return successCount;
 }
 
 /* ---------------- HEALTH ---------------- */
@@ -76,7 +111,11 @@ app.get("/health", (_, res) => {
     status: "ok",
     videoExists: fs.existsSync(VIDEO_FILE),
     isProcessing: isProcessingVideo,
-    clients: clients.size
+    isProcessingWebcam: isProcessingWebcam,
+    clients: clients.size,
+    queueSize: processingQueue.length,
+    frameWidth,
+    frameHeight
   });
 });
 
@@ -107,7 +146,7 @@ app.post("/debug/test-roboflow", async (_, res) => {
     console.log("\n🧪 TEST ENDPOINT - Roboflow API Debug");
     console.log("=" .repeat(60));
     console.log(`📸 Frame Size: ${imageBuffer.length} bytes`);
-    console.log(`🔑 API Key: ${ROBOFLOW_API_KEY}`);
+    console.log(`🔑 API Key: ${ROBOFLOW_API_KEY?.substring(0, 8)}...`);
     console.log(`📊 Model: ${ROBOFLOW_MODEL}`);
     console.log(`📌 Version: ${ROBOFLOW_VERSION}`);
     console.log(`🎯 Confidence: ${CONFIDENCE}`);
@@ -151,7 +190,8 @@ app.post("/debug/test-roboflow", async (_, res) => {
         success: true,
         message: "Roboflow API test successful",
         predictions: response.data.predictions || [],
-        frameSize: imageBuffer.length
+        frameSize: imageBuffer.length,
+        imageInfo: response.data.image || {}
       });
     } catch (error) {
       console.error("❌ API Error:", {
@@ -183,6 +223,7 @@ app.post("/api/start-processing", (_, res) => {
 
   isProcessingVideo = true;
   frameCount = 0;
+  processingQueue = [];
 
   ffmpegProcess = spawn("ffmpeg", [
     "-i", VIDEO_FILE,
@@ -220,6 +261,7 @@ app.post("/api/start-processing", (_, res) => {
 
   ffmpegProcess.on("close", () => {
     isProcessingVideo = false;
+    console.log("📹 Video processing completed");
   });
 
   res.json({ success: true });
@@ -231,6 +273,7 @@ app.post("/api/stop-processing", (_, res) => {
   isProcessingVideo = false;
   ffmpegProcess?.kill("SIGTERM");
   ffmpegProcess = null;
+  processingQueue = [];
   res.json({ success: true });
 });
 
@@ -239,8 +282,11 @@ app.post("/api/stop-processing", (_, res) => {
 app.get("/api/status", (_, res) => {
   res.json({
     isProcessing: isProcessingVideo,
+    isProcessingWebcam: isProcessingWebcam,
     frameCount: frameCount,
-    clients: clients.size
+    webcamFrameCount: webcamFrameCount,
+    clients: clients.size,
+    queueSize: processingQueue.length
   });
 });
 
@@ -248,9 +294,12 @@ app.get("/stats", (_, res) => {
   res.json({
     status: "ok",
     isProcessing: isProcessingVideo,
+    isProcessingWebcam: isProcessingWebcam,
     frameCount: frameCount,
+    webcamFrameCount: webcamFrameCount,
     clients: clients.size,
-    videoExists: fs.existsSync(VIDEO_FILE)
+    videoExists: fs.existsSync(VIDEO_FILE),
+    queueSize: processingQueue.length
   });
 });
 
@@ -304,12 +353,16 @@ app.get("/webcam", (req, res) => {
   });
 
   const frameHandler = (frame) => {
-    res.write("--boundary\r\n");
-    res.write("Content-Type: image/jpeg\r\n");
-    res.write(`Content-Length: ${frame.length}\r\n`);
-    res.write("Content-Disposition: inline; filename=frame.jpg\r\n\r\n");
-    res.write(frame);
-    res.write("\r\n");
+    try {
+      res.write("--boundary\r\n");
+      res.write("Content-Type: image/jpeg\r\n");
+      res.write(`Content-Length: ${frame.length}\r\n`);
+      res.write("Content-Disposition: inline; filename=frame.jpg\r\n\r\n");
+      res.write(frame);
+      res.write("\r\n");
+    } catch (e) {
+      // Client disconnected
+    }
   };
 
   webcamClients2.add(frameHandler);
@@ -321,13 +374,17 @@ app.get("/webcam", (req, res) => {
 });
 
 function broadcastWebcamFrame(frame) {
+  const toRemove = [];
+  
   webcamClients2.forEach(handler => {
     try {
       handler(frame);
     } catch (e) {
-      console.error("❌ Error broadcasting webcam frame:", e.message);
+      toRemove.push(handler);
     }
   });
+  
+  toRemove.forEach(handler => webcamClients2.delete(handler));
 }
 
 /* --------------- START WEBCAM PROCESSING WITH PPE DETECTION --------------- */
@@ -339,25 +396,30 @@ app.post("/api/start-webcam-processing", (_, res) => {
 
   isProcessingWebcam = true;
   webcamFrameCount = 0;
+  processingQueue = [];
 
   console.log("\n🎥 Starting webcam PPE detection...");
+  console.log(`⚙️  Settings: Confidence=${CONFIDENCE}, Overlap=${OVERLAP}, SampleRate=1/${FRAME_SAMPLE_RATE}`);
 
-  // Capture from /dev/video0 (default webcam device)
+  // IMPROVED: Better webcam settings for higher quality
   webcamProcess = spawn("ffmpeg", [
     "-f", "v4l2",
     "-video_size", "640x480",
-    "-framerate", "15",
-    "-i", "/dev/video0",
-    "-vf", "fps=1",
+    "-framerate", "30",  // Increased from 15
+    "-i", "/dev/video1",
+    "-vf", "fps=5",  // Extract 5 frames per second (increased from 1)
     "-f", "image2pipe",
     "-vcodec", "mjpeg",
-    "-q:v", "2",
+    "-q:v", "2",  // High quality JPEG
     "-"
   ]);
 
   let buffer = Buffer.alloc(0);
+  let errorOccurred = false;
 
   webcamProcess.stdout.on("data", async chunk => {
+    if (errorOccurred) return;
+    
     buffer = Buffer.concat([buffer, chunk]);
 
     // Memory guard
@@ -378,13 +440,38 @@ app.post("/api/start-webcam-processing", (_, res) => {
       // Broadcast frame to all connected MJPEG clients
       broadcastWebcamFrame(frame);
       
-      // Process every frame for detection
-      await processWebcamFrame(frame, webcamFrameCount);
+      // IMPROVED: Process with queue to avoid blocking
+      if (webcamFrameCount % FRAME_SAMPLE_RATE === 0) {
+        queueFrameProcessing(frame, webcamFrameCount, 'webcam');
+      }
     }
   });
 
   webcamProcess.stderr.on("data", (data) => {
     const message = data.toString();
+    
+    // Check for device busy error
+    if (message.includes("Device or resource busy")) {
+      errorOccurred = true;
+      console.error("❌ Webcam device is busy. Another process is using /dev/video1");
+      console.error("   Fix: pkill -f 'ffmpeg.*video1' || fuser -k /dev/video1");
+      
+      broadcast({
+        eventType: "WEBCAM_ERROR",
+        error: "Device busy - another process is using /dev/video1",
+        message: "Try: pkill -f 'ffmpeg.*video1' or fuser -k /dev/video1"
+      });
+      
+      isProcessingWebcam = false;
+      webcamProcess?.kill("SIGTERM");
+      return;
+    }
+    
+    // Ignore common FFmpeg info messages
+    if (message.includes("frame=") || message.includes("fps=") || message.includes("bitrate=")) {
+      return;
+    }
+    
     if (message.includes("error") || message.includes("Error")) {
       console.error("❌ FFmpeg error:", message);
     }
@@ -396,7 +483,15 @@ app.post("/api/start-webcam-processing", (_, res) => {
   });
 
   webcamProcess.on("error", (error) => {
+    errorOccurred = true;
     console.error("❌ Webcam process error:", error.message);
+    
+    broadcast({
+      eventType: "WEBCAM_ERROR",
+      error: "Process error",
+      message: error.message
+    });
+    
     isProcessingWebcam = false;
   });
 
@@ -409,11 +504,51 @@ app.post("/api/stop-webcam-processing", (_, res) => {
   isProcessingWebcam = false;
   webcamProcess?.kill("SIGTERM");
   webcamProcess = null;
+  processingQueue = [];
   console.log("🎥 Webcam processing stopped");
   res.json({ success: true, message: "Webcam processing stopped" });
 });
 
-/* --------------- WEBCAM ROBOFLOW INFERENCE --------------- */
+/* --------------- IMPROVED: FRAME QUEUE PROCESSING --------------- */
+
+function queueFrameProcessing(imageBuffer, frameNumber, source = 'webcam') {
+  // Don't queue if we're already at max capacity
+  if (processingQueue.length >= MAX_QUEUE_SIZE) {
+    console.log(`⚠️  Queue full, skipping frame #${frameNumber}`);
+    return;
+  }
+  
+  processingQueue.push({ imageBuffer, frameNumber, source });
+  
+  if (!isProcessingFrame) {
+    processNextFrame();
+  }
+}
+
+async function processNextFrame() {
+  if (processingQueue.length === 0) {
+    isProcessingFrame = false;
+    return;
+  }
+  
+  isProcessingFrame = true;
+  const { imageBuffer, frameNumber, source } = processingQueue.shift();
+  
+  try {
+    if (source === 'webcam') {
+      await processWebcamFrame(imageBuffer, frameNumber);
+    } else {
+      await processFrame(imageBuffer, frameNumber);
+    }
+  } catch (error) {
+    console.error(`❌ Error processing frame #${frameNumber}:`, error.message);
+  }
+  
+  // Process next frame
+  setImmediate(processNextFrame);
+}
+
+/* --------------- IMPROVED: WEBCAM ROBOFLOW INFERENCE --------------- */
 
 async function processWebcamFrame(imageBuffer, frameNumber) {
   try {
@@ -423,11 +558,8 @@ async function processWebcamFrame(imageBuffer, frameNumber) {
       contentType: "image/jpeg"
     });
 
-    const url = `https://detect.roboflow.com/${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`;
+    const url = `http://localhost:9001/${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`;
     
-    console.log(`\n🎥 Webcam Frame #${frameNumber} | Size: ${imageBuffer.length} bytes`);
-    console.log(`🌐 Calling: ${url}`);
-
     const response = await axios.post(
       url,
       form,
@@ -435,45 +567,77 @@ async function processWebcamFrame(imageBuffer, frameNumber) {
         params: {
           api_key: ROBOFLOW_API_KEY,
           confidence: CONFIDENCE,
-          overlap: OVERLAP
+          overlap: OVERLAP,
+          // IMPROVED: Request image dimensions from Roboflow
+          image_info: true
         },
         headers: {
           ...form.getHeaders()
         },
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
-        timeout: 30000
+        timeout: 10000  // Reduced timeout for faster response
       }
     );
 
     const predictions = response.data.predictions || [];
-    console.log(`✅ Got ${predictions.length} predictions`);
+    
+    // IMPROVED: Track frame dimensions from Roboflow response
+    if (response.data.image) {
+      frameWidth = response.data.image.width || 640;
+      frameHeight = response.data.image.height || 480;
+    }
+    
+    console.log(`✅ Frame #${frameNumber}: ${predictions.length} detections (${frameWidth}x${frameHeight})`);
 
-    predictions.forEach((p, i) => {
-      console.log(`   [${i+1}] ${p.class} @ ${(p.confidence * 100).toFixed(1)}% (${p.x}, ${p.y}, ${p.width}, ${p.height})`);
-      
+    // IMPROVED: Send all predictions in a single message with frame dimensions
+    if (predictions.length > 0) {
       broadcast({
-        eventType: "PPE_DETECTION_WEBCAM",
+        eventType: "PPE_DETECTION_BATCH_WEBCAM",
         source: "webcam",
         frame: frameNumber,
-        type: p.class,
-        confidence: p.confidence,
-        boundingBox: {
-          x: p.x,
-          y: p.y,
-          width: p.width,
-          height: p.height
-        },
+        frameWidth: frameWidth,
+        frameHeight: frameHeight,
+        count: predictions.length,
+        predictions: predictions.map(p => ({
+          type: p.class,
+          confidence: p.confidence,
+          boundingBox: {
+            x: p.x,
+            y: p.y,
+            width: p.width,
+            height: p.height
+          }
+        })),
         timestamp: new Date().toISOString()
       });
-    });
+      
+      // Also send individual events for compatibility
+      predictions.forEach((p, i) => {
+        broadcast({
+          eventType: "PPE_DETECTION_WEBCAM",
+          source: "webcam",
+          frame: frameNumber,
+          frameWidth: frameWidth,
+          frameHeight: frameHeight,
+          type: p.class,
+          confidence: p.confidence,
+          boundingBox: {
+            x: p.x,
+            y: p.y,
+            width: p.width,
+            height: p.height
+          },
+          timestamp: new Date().toISOString()
+        });
+      });
+    }
 
   } catch (e) {
-    console.error(`❌ Webcam Frame #${frameNumber} Error:`, {
+    console.error(`❌ Frame #${frameNumber} Error:`, {
       status: e.response?.status,
       statusText: e.response?.statusText,
-      message: e.message,
-      data: e.response?.data
+      message: e.message
     });
   }
 }
@@ -489,9 +653,6 @@ async function processFrame(imageBuffer, frameNumber) {
     });
 
     const url = `https://detect.roboflow.com/${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`;
-    
-    console.log(`\n📹 Frame #${frameNumber} | Size: ${imageBuffer.length} bytes`);
-    console.log(`🌐 Calling: ${url}`);
 
     const response = await axios.post(
       url,
@@ -500,26 +661,33 @@ async function processFrame(imageBuffer, frameNumber) {
         params: {
           api_key: ROBOFLOW_API_KEY,
           confidence: CONFIDENCE,
-          overlap: OVERLAP
+          overlap: OVERLAP,
+          image_info: true
         },
         headers: {
           ...form.getHeaders()
         },
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
-        timeout: 30000
+        timeout: 10000
       }
     );
 
     const predictions = response.data.predictions || [];
-    console.log(`✅ Got ${predictions.length} predictions`);
+    
+    if (response.data.image) {
+      frameWidth = response.data.image.width || 640;
+      frameHeight = response.data.image.height || 480;
+    }
+    
+    console.log(`✅ Frame #${frameNumber}: ${predictions.length} detections`);
 
     predictions.forEach((p, i) => {
-      console.log(`   [${i+1}] ${p.class} @ ${(p.confidence * 100).toFixed(1)}% (${p.x}, ${p.y}, ${p.width}, ${p.height})`);
-      
       broadcast({
         eventType: "PPE_DETECTION",
         frame: frameNumber,
+        frameWidth: frameWidth,
+        frameHeight: frameHeight,
         type: p.class,
         confidence: p.confidence,
         boundingBox: {
@@ -535,9 +703,7 @@ async function processFrame(imageBuffer, frameNumber) {
   } catch (e) {
     console.error(`❌ Frame #${frameNumber} Error:`, {
       status: e.response?.status,
-      statusText: e.response?.statusText,
-      message: e.message,
-      data: e.response?.data
+      message: e.message
     });
   }
 }
@@ -548,9 +714,16 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 function shutdown() {
+  console.log("\n🛑 Shutting down...");
   isProcessingVideo = false;
+  isProcessingWebcam = false;
   ffmpegProcess?.kill("SIGTERM");
-  server.close(() => process.exit(0));
+  webcamProcess?.kill("SIGTERM");
+  processingQueue = [];
+  server.close(() => {
+    console.log("✅ Server closed");
+    process.exit(0);
+  });
 }
 
 export default app;

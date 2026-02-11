@@ -23,8 +23,10 @@ help:
 	@echo "$(BLUE)Available targets:$(NC)"
 	@echo ""
 	@echo "  $(GREEN)make backend$(NC)       - Start backend server (port 3001)"
-	@echo "  $(GREEN)make frontend$(NC)      - Start frontend UI (port 5173)"
+	@echo "  $(GREEN)make frontend$(NC)      - Start frontend UI (port 5173+)"
 	@echo "  $(GREEN)make all$(NC)           - Start backend + frontend"
+	@echo "  $(GREEN)make webcam$(NC)        - Start backend for webcam PPE detection"
+	@echo "  $(GREEN)make kill$(NC)          - Kill all running processes"
 	@echo "  $(GREEN)make install$(NC)       - Install all dependencies"
 	@echo "  $(GREEN)make info$(NC)          - Show system info"
 	@echo "  $(GREEN)make process-info$(NC)  - Show processing pipeline info"
@@ -220,6 +222,39 @@ test-video:
 	else \
 		echo "$(RED)❌ Video file not found$(NC)"; \
 	fi
+
+kill:
+	@echo "$(YELLOW)🔪 Killing all processes...$(NC)"
+	@echo "   Stopping Node.js backend..."
+	@pkill -f "node server.js" || true
+	@echo "   Stopping Vite frontend..."
+	@pkill -f "vite" || true
+	@echo "   Stopping FFmpeg processes..."
+	@pkill -f "ffmpeg.*video0" || true
+	@pkill -f "npm run dev" || true
+	@pkill -f ffmpeg || true
+	@sleep 1
+	@echo "$(GREEN)✅ All processes stopped$(NC)"
+	@kill -9 $(lsof -t -i :8080) || true
+
+webcam: install-backend
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)Starting Backend for Webcam PPE Detection...$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo ""
+	@echo "$(GREEN)🚀 Backend running on port $(BACKEND_PORT)$(NC)"
+	@echo "   📷 Webcam stream: http://localhost:$(BACKEND_PORT)/webcam"
+	@echo "   🔌 Start processing: POST http://localhost:$(BACKEND_PORT)/api/start-webcam-processing"
+	@echo "   🛑 Stop processing: POST http://localhost:$(BACKEND_PORT)/api/stop-webcam-processing"
+	@echo "   ❤️  Health check   : http://localhost:$(BACKEND_PORT)/health"
+	@echo ""
+	@echo "$(YELLOW)Next steps:$(NC)"
+	@echo "  1. Open frontend UI: http://localhost:5173 (or 5174+)"
+	@echo "  2. Click on 'Webcam' tab"
+	@echo "  3. Click 'Start Webcam' button"
+	@echo "  4. Watch live PPE detections in real-time"
+	@echo ""
+	@node server.js
 
 # ============================================================
 # Default
