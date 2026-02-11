@@ -14,9 +14,11 @@ const activeTab = ref("dashboard");
     <header class="app-header">
       <div class="header-content">
         <div class="logo-section">
-          <i class="fas fa-shield-alt"></i>
-          <h1>PPE Detection System</h1>
-          <span class="subtitle">Powered by Roboflow</span>
+          <img src="/logo.jpeg" alt="Sutherland Logo" class="sutherland-logo">
+          <div class="header-text">
+            <h1>PPE Detection System</h1>
+            <span class="subtitle">Powered by Sutherland</span>
+          </div>
         </div>
       </div>
     </header>
@@ -78,12 +80,12 @@ const activeTab = ref("dashboard");
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  background: #FFFFFF;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 .app-header {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #27235C 0%, #1a1640 100%);
   color: white;
   padding: 20px 40px;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
@@ -97,24 +99,32 @@ const activeTab = ref("dashboard");
 .logo-section {
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 20px;
 }
 
-.logo-section i {
-  font-size: 2.5rem;
+.sutherland-logo {
+  height: 60px;
+  width: auto;
+  min-width: 60px;
 }
 
-.logo-section h1 {
+.header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.header-text h1 {
   font-size: 2rem;
   font-weight: 700;
   letter-spacing: -0.5px;
+  margin: 0;
 }
 
 .subtitle {
   font-size: 0.9rem;
   opacity: 0.9;
-  margin-left: auto;
-  align-self: flex-end;
+  margin: 0;
 }
 
 .app-nav {
@@ -142,13 +152,13 @@ const activeTab = ref("dashboard");
 }
 
 .nav-btn:hover {
-  border-color: #667eea;
-  color: #667eea;
+  border-color: #DE1B54;
+  color: #DE1B54;
   transform: translateY(-2px);
 }
 
 .nav-btn.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #DE1B54 0%, #B31545 100%);
   color: white;
   border-color: transparent;
 }
