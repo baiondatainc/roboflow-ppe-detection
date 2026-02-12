@@ -417,7 +417,22 @@ const setupAnnotationListener = () => {
           frameHeight.value = data.frameHeight;
         }
         
-        displayedAnnotations.value = data.predictions.map(p => ({
+        // Filter predictions: hard hat/helmet must be >= 80% confidence
+        const HARDHAT_MIN_CONFIDENCE = 0.8;
+        const filteredPredictions = data.predictions.filter(p => {
+          const normalizedType = p.type.toLowerCase().replace(/[_-]/g, '');
+          
+          // Apply 80% confidence filter only to hard hat/helmet detections
+          if (normalizedType.includes('hardhat') || normalizedType.includes('helmet') || normalizedType.includes('head')) {
+            if (p.confidence < HARDHAT_MIN_CONFIDENCE) {
+              console.log(`[Filtered] ${p.type}: ${(p.confidence * 100).toFixed(1)}% < 80%`);
+              return false;
+            }
+          }
+          return true;
+        });
+        
+        displayedAnnotations.value = filteredPredictions.map(p => ({
           type: p.type,
           frame: data.frame,
           confidence: p.confidence,
@@ -426,9 +441,9 @@ const setupAnnotationListener = () => {
           boundingBox: p.boundingBox
         }));
         
-        // Update PPE status
+        // Update PPE status with filtered predictions
         const now = Date.now();
-        data.predictions.forEach(p => {
+        filteredPredictions.forEach(p => {
           const normalizedType = p.type.toLowerCase().replace(/[_-]/g, '');
           
           // Map to PPE status keys
@@ -469,7 +484,7 @@ const setupAnnotationListener = () => {
           }
         });
         
-        detectionCount.value += data.count;
+        detectionCount.value += filteredPredictions.length;
         lastDetectionTime.value = now;
         return;
       }
@@ -478,6 +493,16 @@ const setupAnnotationListener = () => {
         if (data.frameWidth && data.frameHeight) {
           frameWidth.value = data.frameWidth;
           frameHeight.value = data.frameHeight;
+        }
+        
+        // Check if this is a hard hat/helmet detection below 80% confidence - skip it
+        const HARDHAT_MIN_CONFIDENCE = 0.8;
+        const normalizedTypeCheck = data.type.toLowerCase().replace(/[_-]/g, '');
+        
+        if ((normalizedTypeCheck.includes('hardhat') || normalizedTypeCheck.includes('helmet') || normalizedTypeCheck.includes('head')) &&
+            data.confidence < HARDHAT_MIN_CONFIDENCE) {
+          console.log(`[Filtered] ${data.type}: ${(data.confidence * 100).toFixed(1)}% < 80%`);
+          return; // Skip this low-confidence hard hat detection
         }
         
         const annotation = {
