@@ -406,7 +406,7 @@ app.post("/api/start-webcam-processing", (_, res) => {
     "-f", "v4l2",
     "-video_size", "640x480",
     "-framerate", "30",  // Increased from 15
-    "-i", "/dev/video1",
+    "-i", "/dev/video0",
     "-vf", "fps=5",  // Extract 5 frames per second (increased from 1)
     "-f", "image2pipe",
     "-vcodec", "mjpeg",
@@ -453,13 +453,13 @@ app.post("/api/start-webcam-processing", (_, res) => {
     // Check for device busy error
     if (message.includes("Device or resource busy")) {
       errorOccurred = true;
-      console.error("❌ Webcam device is busy. Another process is using /dev/video1");
-      console.error("   Fix: pkill -f 'ffmpeg.*video1' || fuser -k /dev/video1");
+      console.error("❌ Webcam device is busy. Another process is using /dev/video0");
+      console.error("   Fix: pkill -f 'ffmpeg.*video0' || fuser -k /dev/video0");
       
       broadcast({
         eventType: "WEBCAM_ERROR",
-        error: "Device busy - another process is using /dev/video1",
-        message: "Try: pkill -f 'ffmpeg.*video1' or fuser -k /dev/video1"
+        error: "Device busy - another process is using /dev/video0",
+        message: "Try: pkill -f 'ffmpeg.*video0' or fuser -k /dev/video0"
       });
       
       isProcessingWebcam = false;
