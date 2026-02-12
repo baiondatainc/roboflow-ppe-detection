@@ -768,53 +768,81 @@ app.post("/api/stop-processing", (_, res) => {
 
 async function processFrame(imageBuffer, frameNumber) {
   try {
-    const form = new FormData();
-    form.append("file", imageBuffer, {
-      filename: "frame.jpg",
-      contentType: "image/jpeg"
+    // Use local model inference instead of Roboflow
+    const base64Image = imageBuffer.toString("base64");
+    const request = {
+      image: base64Image,
+      confidence: CONFIDENCE
+    };
+
+    // Send to Python inference service for local processing
+    const result = await new Promise((resolve) => {
+      if (!pythonInferenceProcess || !pythonInferenceProcess.stdout || !inferenceReady) {
+        resolve({ success: false, detections: [] });
+        return;
+      }
+
+      const responseHandler = (data) => {
+        try {
+          const result = JSON.parse(data.toString());
+          if (result.success) {
+            pythonInferenceProcess.stdout.removeListener("data", responseHandler);
+            resolve(result);
+          }
+        } catch (error) {
+          console.error("❌ Parse error:", error.message);
+        }
+      };
+
+      pythonInferenceProcess.stdout.once("data", responseHandler);
+
+      try {
+        pythonInferenceProcess.stdin.write(JSON.stringify(request) + "\n");
+
+        setTimeout(() => {
+          pythonInferenceProcess.stdout.removeListener("data", responseHandler);
+          resolve({ success: false, detections: [] });
+        }, 10000);
+      } catch (error) {
+        resolve({ success: false, detections: [] });
+      }
     });
 
-    const url = `https://detect.roboflow.com/${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`;
+    if (!result.success) {
+      return;
+    }
 
-    const response = await axios.post(url, form, {
-      params: {
-        api_key: ROBOFLOW_API_KEY,
-        confidence: CONFIDENCE,
-        overlap: OVERLAP,
-        image_info: true
-      },
-      headers: form.getHeaders(),
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity,
-      timeout: 10000
-    });
-
-    const predictions = response.data.predictions || [];
+    const predictions = result.detections || [];
     
-    if (response.data.image) {
-      frameWidth = response.data.image.width || 640;
-      frameHeight = response.data.image.height || 480;
+    if (result.frame_width && result.frame_height) {
+      frameWidth = result.frame_width;
+      frameHeight = result.frame_height;
     }
     
-    console.log(`✅ Frame #${frameNumber}: ${predictions.length} detections`);
+    console.log(`✅ Frame #${frameNumber}: ${predictions.length} detections (Local Model)`);
 
-    predictions.forEach((p) => {
+    // Send batch of predictions
+    if (predictions.length > 0 || frameNumber % 10 === 0) {
       broadcast({
-        eventType: "PPE_DETECTION",
+        eventType: "PPE_DETECTION_BATCH_VIDEO",
+        source: "local",
         frame: frameNumber,
         frameWidth: frameWidth,
         frameHeight: frameHeight,
-        type: p.class,
-        confidence: p.confidence,
-        boundingBox: {
-          x: p.x,
-          y: p.y,
-          width: p.width,
-          height: p.height
-        },
+        count: predictions.length,
+        predictions: predictions.map(p => ({
+          type: p.class,
+          confidence: p.confidence,
+          boundingBox: {
+            x: p.x,
+            y: p.y,
+            width: p.width,
+            height: p.height
+          }
+        })),
         timestamp: new Date().toISOString()
       });
-    });
+    }
 
   } catch (e) {
     console.error(`❌ Frame #${frameNumber} Error:`, e.message);

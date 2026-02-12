@@ -1,7 +1,23 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from "vue";
-import socket from "../services/socket";
+import {
+  WebSocketService,
+  DetectionService,
+  CanvasRenderer,
+  APIService,
+  StreamHealthMonitor,
+  FPSCounter
+} from "../services/index.js";
 
+// Service instances
+const apiService = new APIService();
+const detectionService = new DetectionService();
+const canvasRenderer = new CanvasRenderer();
+const streamHealthMonitor = new StreamHealthMonitor({ apiService });
+const fpsCounter = new FPSCounter();
+const websocketService = new WebSocketService();
+
+// Component state
 const imageElement = ref(null);
 const canvasElement = ref(null);
 const streamStatus = ref("connecting");
@@ -10,17 +26,13 @@ const isProcessing = ref(false);
 const processingError = ref("");
 const detectionCount = ref(0);
 const lastDetectionTime = ref(null);
-const imageRefreshCounter = ref(0);
 
 // Frame dimensions
 const frameWidth = ref(640);
 const frameHeight = ref(480);
-
-// Performance tracking
 const fps = ref(0);
-let frameTimestamps = [];
 
-// PPE Status tracking
+// PPE Status
 const ppeStatus = ref({
   hardhat: { present: false, confidence: 0, lastSeen: null },
   helmet: { present: false, confidence: 0, lastSeen: null },
@@ -41,7 +53,7 @@ const statusText = {
 
 let renderAnimationId = null;
 
-// Computed PPE compliance status
+// Computed PPE compliance
 const ppeCompliance = computed(() => {
   const hasHead = ppeStatus.value.hardhat.present || 
                   ppeStatus.value.helmet.present || 
@@ -64,293 +76,146 @@ const ppeCompliance = computed(() => {
   };
 });
 
-onMounted(() => {
-  checkStreamHealth();
-  setInterval(checkStreamHealth, 5000);
-  
-  setupAnnotationListener();
-  checkProcessingStatus();
-  setInterval(checkProcessingStatus, 2000);
-  
+onMounted(async () => {
+  // Initialize services
+  setupStreamHealthMonitoring();
+  setupWebSocketListening();
   startRenderLoop();
-  
-  // Update PPE status every 500ms
-  setInterval(updatePPEStatus, 500);
+  startPPEStatusUpdater();
+
+  // Connect WebSocket
+  try {
+    await websocketService.connect();
+  } catch (error) {
+    console.error("Failed to connect WebSocket:", error);
+  }
 });
 
 onUnmounted(() => {
   if (renderAnimationId) {
     cancelAnimationFrame(renderAnimationId);
   }
+  streamHealthMonitor.shutdown();
+  websocketService.disconnect();
 });
 
-const checkStreamHealth = async () => {
-  try {
-    const response = await fetch("http://localhost:3001/health");
-    if (response.ok) {
-      const data = await response.json();
-      if (data.status === "ok") {
-        streamStatus.value = "connected";
-        if (data.frameWidth && data.frameHeight) {
-          frameWidth.value = data.frameWidth;
-          frameHeight.value = data.frameHeight;
-        }
-      } else {
-        handleStreamError();
-      }
-    } else {
-      handleStreamError();
-    }
-  } catch (error) {
-    handleStreamError();
-  }
+const setupStreamHealthMonitoring = () => {
+  streamHealthMonitor.on('statusChanged', (data) => {
+    streamStatus.value = data.status;
+    frameWidth.value = streamHealthMonitor.frameWidth;
+    frameHeight.value = streamHealthMonitor.frameHeight;
+  });
+
+  streamHealthMonitor.start();
 };
 
-const handleStreamError = () => {
-  streamStatus.value = "reconnecting";
-  setTimeout(checkStreamHealth, 2000);
-};
+const setupWebSocketListening = () => {
+  websocketService.on('PPE_DETECTION_BATCH_WEBCAM', (data) => {
+    handleDetectionBatch(data);
+  });
 
-// Update PPE status based on recent detections
-const updatePPEStatus = () => {
-  const now = Date.now();
-  const timeoutMs = 2000; // 2 seconds timeout
-  
-  // Reset all statuses
-  Object.keys(ppeStatus.value).forEach(key => {
-    const item = ppeStatus.value[key];
-    if (item.lastSeen && (now - item.lastSeen) > timeoutMs) {
-      item.present = false;
-      item.confidence = 0;
-    }
+  websocketService.on('WEBCAM_ERROR', (data) => {
+    processingError.value = `${data.error}: ${data.message}`;
+    streamStatus.value = "disconnected";
+    isProcessing.value = false;
+
+    setTimeout(() => {
+      processingError.value = "";
+    }, 5000);
+  });
+
+  websocketService.on('connected', () => {
+    console.log("✅ WebSocket connected");
+    streamStatus.value = "connected";
+  });
+
+  websocketService.on('disconnected', () => {
+    console.log("❌ WebSocket disconnected");
+    streamStatus.value = "disconnected";
+  });
+
+  websocketService.on('error', (error) => {
+    console.error("❌ WebSocket error:", error);
+    streamStatus.value = "reconnecting";
   });
 };
 
-const drawAnnotations = () => {
-  if (!canvasElement.value || !imageElement.value) return;
+const handleDetectionBatch = (data) => {
+  const detectionData = detectionService.parseDetectionData(data);
   
+  frameWidth.value = detectionData.frameWidth;
+  frameHeight.value = detectionData.frameHeight;
+
+  // Update PPE status from all predictions
+  const ppeUpdate = detectionService.extractPPEStatus(detectionData.predictions);
+  ppeStatus.value = ppeUpdate;
+
+  // Filter for display
+  const filteredPredictions = detectionService.filterForDisplay(detectionData.predictions);
+
+  displayedAnnotations.value = filteredPredictions.map(p =>
+    detectionService.createAnnotation(p, detectionData.frame, detectionData.source)
+  );
+
+  detectionCount.value += filteredPredictions.length;
+  lastDetectionTime.value = Date.now();
+};
+
+const startPPEStatusUpdater = () => {
+  setInterval(() => {
+    const now = Date.now();
+    const timeoutMs = 2000;
+
+    Object.keys(ppeStatus.value).forEach(key => {
+      const item = ppeStatus.value[key];
+      if (item.lastSeen && (now - item.lastSeen) > timeoutMs) {
+        item.present = false;
+        item.confidence = 0;
+      }
+    });
+  }, 500);
+};
+
+const drawFrame = () => {
   const canvas = canvasElement.value;
   const img = imageElement.value;
-  const ctx = canvas.getContext("2d");
-  
-  if (!img.complete || img.naturalWidth === 0 || img.naturalHeight === 0) {
+
+  if (!canvas || !img || !img.complete || img.naturalWidth === 0) {
     return;
   }
-  
-  const imgWidth = img.naturalWidth;
-  const imgHeight = img.naturalHeight;
-  
-  if (canvas.width !== imgWidth || canvas.height !== imgHeight) {
-    canvas.width = imgWidth;
-    canvas.height = imgHeight;
-  }
-  
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  
-  // Enhanced color mapping with source differentiation
-  const colorMap = {
-    head: "#FF3B30",
-    helmet: "#FF9500",
-    hardhat: "#FF9500",
-    hand: "#00C7BE",
-    glove: "#34C759",
-    gloves: "#34C759",
-    vest: "#FFD60A",
-    safety_vest: "#FFD60A",
-    jacket: "#AF52DE",
-    person: "#007AFF",
-    no_hardhat: "#FF3B30",
-    no_safety_vest: "#FF3B30",
-    no_gloves: "#FF3B30"
+
+  fpsCounter.record();
+  fps.value = fpsCounter.getFPS();
+
+  const latestFrame = Math.max(...displayedAnnotations.value.map(a => a.frame || 0), 0);
+  const currentFrameAnnotations = displayedAnnotations.value.filter(a =>
+    a.frame === latestFrame
+  );
+
+  const stats = {
+    totalDetections: detectionCount.value,
+    activeCount: currentFrameAnnotations.length,
+    fps: fps.value
   };
-  
-  const getTypeColor = (type) => {
-    const lowerType = type.toLowerCase().replace(/[_-]/g, '');
-    for (const [key, color] of Object.entries(colorMap)) {
-      const lowerKey = key.toLowerCase().replace(/[_-]/g, '');
-      if (lowerType.includes(lowerKey) || lowerKey.includes(lowerType)) {
-        return color;
-      }
-    }
-    return "#f59e0b";
-  };
-  
-  // Get latest frame annotations
-  const latestFrame = Math.max(...displayedAnnotations.value.map(a => a.frame || 0));
-  const currentFrameAnnotations = displayedAnnotations.value.filter(a => {
-    const type = a.type?.toLowerCase();
-    // Include person detections, exclude head detections
-    return a.frame === latestFrame && 
-           a.boundingBox && 
-           type !== 'head';
-  });
-  
-  // Draw each annotation (excluding head detections, including person)
-  currentFrameAnnotations.forEach((annotation) => {
-    const box = annotation.boundingBox;
-    if (!box || typeof box.x !== 'number' || typeof box.y !== 'number') return;
-    
-    const centerX = box.x;
-    const centerY = box.y;
-    const width = box.width;
-    const height = box.height;
-    
-    const x = centerX - (width / 2);
-    const y = centerY - (height / 2);
-    
-    const clampedX = Math.max(0, Math.min(x, canvas.width - 1));
-    const clampedY = Math.max(0, Math.min(y, canvas.height - 1));
-    const clampedWidth = Math.min(width, canvas.width - clampedX);
-    const clampedHeight = Math.min(height, canvas.height - clampedY);
-    
-    if (clampedWidth <= 0 || clampedHeight <= 0) return;
-    
-    const color = getTypeColor(annotation.type);
-    const isViolation = annotation.type.toLowerCase().includes('no_');
-    
-    // Draw bounding box
-    ctx.strokeStyle = color;
-    ctx.lineWidth = isViolation ? 5 : 3;
-    ctx.strokeRect(clampedX, clampedY, clampedWidth, clampedHeight);
-    
-    // Corner markers
-    const cornerSize = 12;
-    const cornerThickness = 3;
-    ctx.fillStyle = color;
-    
-    // Top-left
-    ctx.fillRect(clampedX, clampedY, cornerSize, cornerThickness);
-    ctx.fillRect(clampedX, clampedY, cornerThickness, cornerSize);
-    
-    // Top-right
-    ctx.fillRect(clampedX + clampedWidth - cornerSize, clampedY, cornerSize, cornerThickness);
-    ctx.fillRect(clampedX + clampedWidth - cornerThickness, clampedY, cornerThickness, cornerSize);
-    
-    // Bottom-left
-    ctx.fillRect(clampedX, clampedY + clampedHeight - cornerThickness, cornerSize, cornerThickness);
-    ctx.fillRect(clampedX, clampedY + clampedHeight - cornerSize, cornerThickness, cornerSize);
-    
-    // Bottom-right
-    ctx.fillRect(clampedX + clampedWidth - cornerSize, clampedY + clampedHeight - cornerThickness, cornerSize, cornerThickness);
-    ctx.fillRect(clampedX + clampedWidth - cornerThickness, clampedY + clampedHeight - cornerSize, cornerThickness, cornerSize);
-    
-    // Label
-    const label = annotation.type.replace(/_/g, ' ').toUpperCase();
-    const confidence = `${(annotation.confidence * 100).toFixed(0)}%`;
-    
-    ctx.font = "bold 14px 'Segoe UI', Arial, sans-serif";
-    const labelWidth = ctx.measureText(label).width;
-    const confWidth = ctx.measureText(confidence).width;
-    const totalWidth = Math.max(labelWidth, confWidth) + 16;
-    const labelHeight = 52;
-    
-    const labelY = clampedY > labelHeight + 10 ? clampedY - labelHeight : clampedY + clampedHeight + 5;
-    
-    const gradient = ctx.createLinearGradient(clampedX, labelY, clampedX, labelY + labelHeight);
-    gradient.addColorStop(0, 'rgba(0, 0, 0, 0.95)');
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0.85)');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(clampedX, labelY, totalWidth, labelHeight);
-    
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(clampedX, labelY, totalWidth, labelHeight);
-    
-    ctx.fillStyle = color;
-    ctx.font = "bold 14px 'Segoe UI', Arial, sans-serif";
-    ctx.fillText(label, clampedX + 8, labelY + 20);
-    
-    ctx.font = "bold 16px 'Segoe UI', Arial, sans-serif";
-    ctx.fillText(confidence, clampedX + 8, labelY + 42);
-  });
-  
-  // Stats panel
-  const panelWidth = 240;
-  const panelHeight = 100;
-  
-  const gradient = ctx.createLinearGradient(0, 0, 0, panelHeight);
-  gradient.addColorStop(0, 'rgba(0, 0, 0, 0.85)');
-  gradient.addColorStop(1, 'rgba(0, 0, 0, 0.75)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, panelWidth, panelHeight);
-  
-  ctx.strokeStyle = "#3b82f6";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(0, 0, panelWidth, panelHeight);
-  
-  ctx.fillStyle = "#fff";
-  ctx.font = "bold 16px 'Segoe UI', Arial, sans-serif";
-  ctx.fillText(`📊 Detections: ${detectionCount.value}`, 15, 28);
-  
-  ctx.font = "14px 'Segoe UI', Arial, sans-serif";
-  ctx.fillText(`🎯 Active: ${currentFrameAnnotations.length}`, 15, 52);
-  ctx.fillText(`⚡ FPS: ${fps.value.toFixed(1)}`, 15, 76);
-  
-  // Live indicator
-  if (isProcessing.value) {
-    const statusX = canvas.width - 180;
-    const statusY = 15;
-    
-    ctx.fillStyle = "#10b981";
-    ctx.fillRect(statusX, statusY, 165, 40);
-    
-    ctx.strokeStyle = "#059669";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(statusX, statusY, 165, 40);
-    
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 16px 'Segoe UI', Arial, sans-serif";
-    ctx.fillText("🔴 LIVE", statusX + 15, statusY + 27);
-  }
+
+  canvasRenderer.render(canvas, currentFrameAnnotations, stats, isProcessing.value);
 };
 
 const startRenderLoop = () => {
-  let lastTime = performance.now();
-  
-  const render = (currentTime) => {
-    const deltaTime = currentTime - lastTime;
-    if (deltaTime > 0) {
-      frameTimestamps.push(currentTime);
-      if (frameTimestamps.length > 30) {
-        frameTimestamps.shift();
-      }
-      
-      if (frameTimestamps.length >= 2) {
-        const timeDiff = frameTimestamps[frameTimestamps.length - 1] - frameTimestamps[0];
-        fps.value = (frameTimestamps.length - 1) / (timeDiff / 1000);
-      }
-    }
-    lastTime = currentTime;
-    
-    const canvas = canvasElement.value;
-    const img = imageElement.value;
-    
-    if (canvas && img && img.naturalWidth > 0 && img.naturalHeight > 0) {
-      drawAnnotations();
-    }
-    
+  const render = () => {
+    drawFrame();
     renderAnimationId = requestAnimationFrame(render);
   };
-  
+
   renderAnimationId = requestAnimationFrame(render);
 };
 
 const startProcessing = async () => {
   try {
     processingError.value = "";
-    const response = await fetch("http://localhost:3001/api/start-webcam-processing", {
-      method: "POST"
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      isProcessing.value = true;
-      console.log("✅ Webcam Processing started:", data);
-    } else {
-      const error = await response.json();
-      processingError.value = error.error || "Failed to start webcam processing";
-      console.error("❌ Start webcam processing failed:", error);
-    }
+    await apiService.startWebcamProcessing();
+    isProcessing.value = true;
+    console.log("✅ Webcam Processing started");
   } catch (error) {
     processingError.value = "Connection error: " + error.message;
     console.error("❌ Error starting webcam processing:", error);
@@ -360,278 +225,19 @@ const startProcessing = async () => {
 const stopProcessing = async () => {
   try {
     processingError.value = "";
-    const response = await fetch("http://localhost:3001/api/stop-webcam-processing", {
-      method: "POST"
+    await apiService.stopWebcamProcessing();
+    isProcessing.value = false;
+    displayedAnnotations.value = [];
+
+    Object.keys(ppeStatus.value).forEach(key => {
+      ppeStatus.value[key] = { present: false, confidence: 0, lastSeen: null };
     });
 
-    if (response.ok) {
-      isProcessing.value = false;
-      displayedAnnotations.value = [];
-      
-      // Reset PPE status
-      Object.keys(ppeStatus.value).forEach(key => {
-        ppeStatus.value[key] = { present: false, confidence: 0, lastSeen: null };
-      });
-      
-      console.log("✅ Webcam Processing stopped");
-    } else {
-      const error = await response.json();
-      processingError.value = error.error || "Failed to stop webcam processing";
-      console.error("❌ Stop webcam processing failed:", error);
-    }
+    console.log("✅ Webcam Processing stopped");
   } catch (error) {
     processingError.value = "Connection error: " + error.message;
     console.error("❌ Error stopping webcam processing:", error);
   }
-};
-
-const checkProcessingStatus = async () => {
-  try {
-    const response = await fetch("http://localhost:3001/api/status");
-    if (response.ok) {
-      const data = await response.json();
-      isProcessing.value = data.isProcessingWebcam || false;
-    }
-  } catch (error) {
-    // Silently fail
-  }
-};
-
-const setupAnnotationListener = () => {
-  const handleMessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      
-      if (data.eventType === "WEBCAM_ERROR") {
-        console.error("❌ Webcam Error:", data.error);
-        processingError.value = `${data.error}: ${data.message}`;
-        streamStatus.value = "disconnected";
-        isProcessing.value = false;
-        
-        setTimeout(() => {
-          processingError.value = "";
-        }, 5000);
-        return;
-      }
-      
-      if (data.eventType === "PPE_DETECTION_BATCH_WEBCAM") {
-        console.log(`📦 Batch: ${data.count} detections in frame #${data.frame} (Source: ${data.source})`);
-        
-        if (data.frameWidth && data.frameHeight) {
-          frameWidth.value = data.frameWidth;
-          frameHeight.value = data.frameHeight;
-        }
-        
-        const now = Date.now();
-        
-        // RESET all PPE items FIRST (before processing any predictions)
-        ppeStatus.value.hardhat = { present: false, confidence: 0, lastSeen: null };
-        ppeStatus.value.helmet = { present: false, confidence: 0, lastSeen: null };
-        ppeStatus.value.head = { present: false, confidence: 0, lastSeen: null };
-        ppeStatus.value.gloves = { present: false, confidence: 0, lastSeen: null };
-        ppeStatus.value.hand = { present: false, confidence: 0, lastSeen: null };
-        ppeStatus.value.vest = { present: false, confidence: 0, lastSeen: null };
-        ppeStatus.value.safety_vest = { present: false, confidence: 0, lastSeen: null };
-        ppeStatus.value.person = { present: false, confidence: 0, lastSeen: null };
-        
-        // Process ALL predictions first to update PPE status (including person)
-        data.predictions.forEach(p => {
-          const normalizedType = p.type.toLowerCase().replace(/[_-]/g, '');
-          
-          // Update person status from ALL predictions
-          if (normalizedType.includes('person')) {
-            ppeStatus.value.person = {
-              present: true,
-              confidence: p.confidence,
-              lastSeen: now
-            };
-          }
-          
-          // For other PPE items, only update if above 80% confidence
-          const HARDHAT_MIN_CONFIDENCE = 0.8;
-          if (p.confidence >= HARDHAT_MIN_CONFIDENCE) {
-            if (normalizedType.includes('hardhat') || normalizedType.includes('helmet') || normalizedType.includes('head')) {
-              const key = normalizedType.includes('hardhat') ? 'hardhat' : 
-                         normalizedType.includes('helmet') ? 'helmet' : 'head';
-              ppeStatus.value[key] = {
-                present: true,
-                confidence: p.confidence,
-                lastSeen: now
-              };
-            }
-            
-            if (normalizedType.includes('glove') || normalizedType.includes('hand')) {
-              const key = normalizedType.includes('glove') ? 'gloves' : 'hand';
-              ppeStatus.value[key] = {
-                present: true,
-                confidence: p.confidence,
-                lastSeen: now
-              };
-            }
-            
-            if (normalizedType.includes('vest') || normalizedType.includes('jacket')) {
-              const key = normalizedType.includes('safety') ? 'safety_vest' : 'vest';
-              ppeStatus.value[key] = {
-                present: true,
-                confidence: p.confidence,
-                lastSeen: now
-              };
-            }
-          }
-        });
-        
-        // Filter predictions for CANVAS display (include person, exclude head)
-        const HARDHAT_MIN_CONFIDENCE = 0.8;
-        const filteredPredictions = data.predictions.filter(p => {
-          const normalizedType = p.type.toLowerCase().replace(/[_-]/g, '');
-          
-          // Exclude head detections from canvas visualization (redundant with hardhat/helmet)
-          if (normalizedType.includes('head') && !normalizedType.includes('hardhat') && !normalizedType.includes('helmet')) {
-            return false;
-          }
-          
-          // Apply 80% confidence filter only to hard hat/helmet detections for display
-          if (normalizedType.includes('hardhat') || normalizedType.includes('helmet')) {
-            if (p.confidence < HARDHAT_MIN_CONFIDENCE) {
-              console.log(`[Filtered from display] ${p.type}: ${(p.confidence * 100).toFixed(1)}% < 80%`);
-              return false;
-            }
-          }
-          return true;
-        });
-        
-        displayedAnnotations.value = filteredPredictions.map(p => ({
-          type: p.type,
-          frame: data.frame,
-          confidence: p.confidence,
-          timestamp: data.timestamp,
-          source: p.source,
-          boundingBox: p.boundingBox
-        }));
-        
-        detectionCount.value += filteredPredictions.length;
-        lastDetectionTime.value = now;
-        return;
-      }
-      
-      if (data.eventType === "PPE_DETECTION_WEBCAM") {
-        // Skip individual events when using batch events
-        // Batch events (PPE_DETECTION_BATCH_WEBCAM) are the source of truth
-        return;
-        
-        // NOTE: Below code is kept for reference but not used
-        /*
-        if (data.frameWidth && data.frameHeight) {
-          frameWidth.value = data.frameWidth;
-          frameHeight.value = data.frameHeight;
-        }
-        
-        // Check if this is a hard hat/helmet detection below 80% confidence - skip it
-        const HARDHAT_MIN_CONFIDENCE = 0.8;
-        const normalizedTypeCheck = data.type.toLowerCase().replace(/[_-]/g, '');
-        
-        // Exclude person detections from visualization
-        if (normalizedTypeCheck.includes('person')) {
-          // Still update PPE status for person, but don't display it
-          ppeStatus.value.person = {
-            present: true,
-            confidence: data.confidence || 0,
-            lastSeen: Date.now()
-          };
-          return;
-        }
-        
-        if ((normalizedTypeCheck.includes('hardhat') || normalizedTypeCheck.includes('helmet') || normalizedTypeCheck.includes('head')) &&
-            data.confidence < HARDHAT_MIN_CONFIDENCE) {
-          console.log(`[Filtered] ${data.type}: ${(data.confidence * 100).toFixed(1)}% < 80%`);
-          return; // Skip this low-confidence hard hat detection
-        }
-        
-        const annotation = {
-          type: data.type || "PPE_Missing",
-          frame: data.frame,
-          confidence: data.confidence || 0,
-          timestamp: data.timestamp || new Date().toISOString(),
-          source: data.detectionSource,
-          boundingBox: data.boundingBox
-        };
-        
-        const now = Date.now();
-        lastDetectionTime.value = now;
-        
-        // Update PPE status
-        const normalizedType = annotation.type.toLowerCase().replace(/[_-]/g, '');
-        
-        if (normalizedType.includes('hardhat') || normalizedType.includes('helmet') || normalizedType.includes('head')) {
-          const key = normalizedType.includes('hardhat') ? 'hardhat' : 
-                     normalizedType.includes('helmet') ? 'helmet' : 'head';
-          ppeStatus.value[key] = {
-            present: true,
-            confidence: annotation.confidence,
-            lastSeen: now
-          };
-        }
-        
-        if (normalizedType.includes('glove') || normalizedType.includes('hand')) {
-          const key = normalizedType.includes('glove') ? 'gloves' : 'hand';
-          ppeStatus.value[key] = {
-            present: true,
-            confidence: annotation.confidence,
-            lastSeen: now
-          };
-        }
-        
-        if (normalizedType.includes('vest') || normalizedType.includes('jacket')) {
-          const key = normalizedType.includes('safety') ? 'safety_vest' : 'vest';
-          ppeStatus.value[key] = {
-            present: true,
-            confidence: annotation.confidence,
-            lastSeen: now
-          };
-        }
-        
-        if (normalizedType.includes('person')) {
-          ppeStatus.value.person = {
-            present: true,
-            confidence: annotation.confidence,
-            lastSeen: now
-          };
-        }
-        
-        const currentFrame = annotation.frame;
-        displayedAnnotations.value = displayedAnnotations.value.filter(a => 
-          a.frame >= currentFrame - 1
-        );
-        
-        displayedAnnotations.value.push(annotation);
-        detectionCount.value++;
-        
-        if (displayedAnnotations.value.length > 50) {
-          displayedAnnotations.value = displayedAnnotations.value.slice(-50);
-        }
-        */
-      }
-    } catch (error) {
-      console.error("❌ Error processing detection:", error);
-    }
-  };
-  
-  socket.addEventListener("open", () => {
-    console.log("✅ WebSocket connected");
-    streamStatus.value = "connected";
-  });
-  
-  socket.addEventListener("close", () => {
-    console.log("❌ WebSocket disconnected");
-    streamStatus.value = "disconnected";
-  });
-  
-  socket.addEventListener("error", (error) => {
-    console.error("❌ WebSocket error:", error);
-    streamStatus.value = "reconnecting";
-  });
-  
-  socket.addEventListener("message", handleMessage);
 };
 </script>
 
@@ -645,7 +251,6 @@ const setupAnnotationListener = () => {
       </div>
     </div>
 
-    <!-- Processing Controls -->
     <div class="processing-controls">
       <div class="control-group">
         <button 
@@ -682,18 +287,16 @@ const setupAnnotationListener = () => {
       </div>
     </div>
 
-    <!-- Main Content: Video + Detection Panel Side by Side -->
     <div class="main-content">
-      <!-- Video Stream Section -->
       <div class="video-section">
         <div class="canvas-wrapper">
           <div class="stream-container">
             <img 
               ref="imageElement"
-              src="http://localhost:3001/webcam"
+              :src="apiService.getWebcamStreamUrl()"
               alt="Live Webcam Stream"
               class="stream-image"
-              @load="drawAnnotations"
+              @load="drawFrame"
               @error="() => streamStatus = 'disconnected'"
             />
             <canvas 
@@ -704,7 +307,6 @@ const setupAnnotationListener = () => {
         </div>
       </div>
 
-      <!-- PPE Status Panel (Right Side) -->
       <div class="ppe-status-panel">
         <div class="panel-header">
           <h3><i class="fas fa-shield-alt"></i> PPE Status</h3>
@@ -717,7 +319,6 @@ const setupAnnotationListener = () => {
         </div>
 
         <div class="ppe-items">
-          <!-- Person Detection -->
           <div 
             class="ppe-item"
             :class="{ 
@@ -744,7 +345,6 @@ const setupAnnotationListener = () => {
             </div>
           </div>
 
-          <!-- Hard Hat -->
           <div 
             class="ppe-item"
             :class="{ 
@@ -773,7 +373,6 @@ const setupAnnotationListener = () => {
             </div>
           </div>
 
-          <!-- Gloves -->
           <div 
             class="ppe-item"
             :class="{ 
@@ -801,7 +400,6 @@ const setupAnnotationListener = () => {
             </div>
           </div>
 
-          <!-- Safety Vest -->
           <div 
             class="ppe-item"
             :class="{ 
@@ -830,7 +428,6 @@ const setupAnnotationListener = () => {
           </div>
         </div>
 
-        <!-- Overall Status Summary -->
         <div class="status-summary">
           <div class="summary-item">
             <div class="summary-label">Total Detections</div>
@@ -1017,7 +614,6 @@ const setupAnnotationListener = () => {
   border-left: 4px solid #dc2626;
 }
 
-/* Main Content Layout */
 .main-content {
   display: flex;
   gap: 20px;
@@ -1060,7 +656,6 @@ const setupAnnotationListener = () => {
   pointer-events: none;
 }
 
-/* PPE Status Panel */
 .ppe-status-panel {
   width: 380px;
   background: white;
@@ -1229,7 +824,6 @@ const setupAnnotationListener = () => {
   color: #1f2937;
 }
 
-/* Responsive Design */
 @media (max-width: 1400px) {
   .main-content {
     flex-direction: column;
@@ -1237,7 +831,6 @@ const setupAnnotationListener = () => {
   
   .ppe-status-panel {
     width: 100%;
-    max-height: none;
   }
 }
 </style>

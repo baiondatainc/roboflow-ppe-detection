@@ -35,20 +35,32 @@ export class CanvasRenderer {
   }
 
   initializeCanvas(canvas, imageElement) {
-    if (!canvas || !imageElement || !imageElement.complete) {
+    if (!canvas) {
       return false;
     }
 
-    const imgWidth = imageElement.naturalWidth;
-    const imgHeight = imageElement.naturalHeight;
+    // Handle both img and video elements
+    let width, height;
+    
+    if (imageElement && imageElement.tagName === 'VIDEO') {
+      width = imageElement.videoWidth;
+      height = imageElement.videoHeight;
+    } else if (imageElement && imageElement.tagName === 'IMG') {
+      width = imageElement.naturalWidth;
+      height = imageElement.naturalHeight;
+    } else if (imageElement) {
+      // Fallback for other elements
+      width = imageElement.width || imageElement.naturalWidth;
+      height = imageElement.height || imageElement.naturalHeight;
+    }
 
-    if (imgWidth === 0 || imgHeight === 0) {
+    if (!width || !height || width === 0 || height === 0) {
       return false;
     }
 
-    if (canvas.width !== imgWidth || canvas.height !== imgHeight) {
-      canvas.width = imgWidth;
-      canvas.height = imgHeight;
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
     }
 
     return true;
@@ -196,7 +208,15 @@ export class CanvasRenderer {
   }
 
   render(canvas, annotations, stats, isProcessing) {
-    if (!this.initializeCanvas(canvas, canvas.parentElement?.querySelector('img'))) {
+    if (!canvas) {
+      return;
+    }
+
+    // Find the media element (video or img) in the canvas parent
+    const container = canvas.parentElement;
+    const mediaElement = container?.querySelector('video') || container?.querySelector('img');
+
+    if (!this.initializeCanvas(canvas, mediaElement)) {
       return;
     }
 

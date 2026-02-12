@@ -1,16 +1,14 @@
 <script setup>
 import { ref } from "vue";
-import StreamViewer from "./components/StreamViewer.vue";
-import WebcamViewer from "./components/WebcamViewer.vue";
-import ViolationFeed from "./components/ViolationFeed.vue";
 import Dashboard from "./components/Dashboard.vue";
+import WebcamViewer from "./components/WebcamViewer.vue";
+import StreamViewer from "./components/StreamViewer.vue";
 
 const activeTab = ref("dashboard");
 </script>
 
 <template>
   <div class="app-container">
-    <!-- Header -->
     <header class="app-header">
       <div class="header-content">
         <div class="logo-section">
@@ -23,7 +21,6 @@ const activeTab = ref("dashboard");
       </div>
     </header>
 
-    <!-- Navigation Tabs -->
     <nav class="app-nav">
       <button 
         :class="['nav-btn', { active: activeTab === 'dashboard' }]"
@@ -41,59 +38,39 @@ const activeTab = ref("dashboard");
         :class="['nav-btn', { active: activeTab === 'stream' }]"
         @click="activeTab = 'stream'"
       >
-        <i class="fas fa-film"></i> Live Stream
-      </button>
-      <button 
-        :class="['nav-btn', { active: activeTab === 'alerts' }]"
-        @click="activeTab = 'alerts'"
-      >
-        <i class="fas fa-bell"></i> Violations
+        <i class="fas fa-film"></i> Video Stream
       </button>
     </nav>
 
-    <!-- Main Content -->
-    <main class="app-main">
-      <div v-show="activeTab === 'dashboard'" class="tab-content">
-        <Dashboard />
-      </div>
-      <div v-show="activeTab === 'webcam'" class="tab-content">
-        <WebcamViewer />
-      </div>
-      <div v-show="activeTab === 'stream'" class="tab-content">
-        <StreamViewer />
-      </div>
-      <div v-show="activeTab === 'alerts'" class="tab-content">
-        <ViolationFeed />
-      </div>
+    <main class="app-content">
+      <keep-alive>
+        <Dashboard v-if="activeTab === 'dashboard'" />
+        <WebcamViewer v-else-if="activeTab === 'webcam'" />
+        <StreamViewer v-else-if="activeTab === 'stream'" />
+      </keep-alive>
     </main>
   </div>
 </template>
 
 <style scoped>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
 .app-container {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  background: #FFFFFF;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  min-height: 100vh;
+  background: #f3f4f6;
 }
 
 .app-header {
-  background: linear-gradient(135deg, #27235C 0%, #1a1640 100%);
+  background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
   color: white;
-  padding: 20px 40px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  padding: 20px 30px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 .header-content {
   max-width: 1400px;
   margin: 0 auto;
+  width: 100%;
 }
 
 .logo-section {
@@ -103,116 +80,94 @@ const activeTab = ref("dashboard");
 }
 
 .sutherland-logo {
-  height: 60px;
+  height: 50px;
   width: auto;
-  min-width: 60px;
+  filter: brightness(0) invert(1);
 }
 
 .header-text {
   display: flex;
   flex-direction: column;
-  gap: 5px;
 }
 
 .header-text h1 {
-  font-size: 2rem;
-  font-weight: 700;
-  letter-spacing: -0.5px;
   margin: 0;
+  font-size: 1.8rem;
+  font-weight: 700;
 }
 
 .subtitle {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   opacity: 0.9;
-  margin: 0;
+  margin-top: 4px;
 }
 
 .app-nav {
   background: white;
+  border-bottom: 2px solid #e5e7eb;
+  padding: 0;
   display: flex;
-  gap: 10px;
-  padding: 15px 40px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 .nav-btn {
-  padding: 10px 20px;
-  background: white;
-  border: 2px solid #e0e0e0;
-  border-radius: 8px;
+  flex: 1;
+  padding: 16px 20px;
+  border: none;
+  background: none;
   cursor: pointer;
   font-size: 1rem;
-  font-weight: 500;
-  color: #333;
+  font-weight: 600;
+  color: #6b7280;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  transition: all 0.3s ease;
+  transition: all 0.3s;
+  border-bottom: 3px solid transparent;
 }
 
 .nav-btn:hover {
-  border-color: #DE1B54;
-  color: #DE1B54;
-  transform: translateY(-2px);
+  background: #f9fafb;
+  color: #1f2937;
 }
 
 .nav-btn.active {
-  background: linear-gradient(135deg, #DE1B54 0%, #B31545 100%);
-  color: white;
-  border-color: transparent;
+  color: #3b82f6;
+  border-bottom-color: #3b82f6;
 }
 
-.app-main {
+.app-content {
   flex: 1;
-  overflow-y: auto;
-  padding: 30px 40px;
+  padding: 30px;
   max-width: 1400px;
-  width: 100%;
   margin: 0 auto;
-}
-
-.tab-content {
-  animation: fadeIn 0.3s ease;
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  width: 100%;
+  box-sizing: border-box;
 }
 
 @media (max-width: 768px) {
-  .app-header {
-    padding: 15px 20px;
-  }
-
-  .logo-section {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .logo-section h1 {
-    font-size: 1.5rem;
-  }
-
-  .subtitle {
-    margin-left: 0;
-    align-self: flex-start;
-  }
-
   .app-nav {
-    padding: 10px 20px;
     flex-wrap: wrap;
   }
 
-  .app-main {
-    padding: 15px 20px;
+  .nav-btn {
+    flex: 0 0 50%;
+    border-bottom: 2px solid #e5e7eb;
+  }
+
+  .nav-btn.active {
+    border-bottom-color: #3b82f6;
+  }
+
+  .header-text h1 {
+    font-size: 1.4rem;
+  }
+
+  .app-content {
+    padding: 20px;
   }
 }
 </style>

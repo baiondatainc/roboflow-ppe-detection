@@ -1,7 +1,23 @@
 <script setup>
-import { ref, onMounted } from "vue";
-import socket from "../services/socket";
+import { ref, onMounted, onUnmounted } from "vue";
+import {
+  WebSocketService,
+  DetectionService,
+  CanvasRenderer,
+  APIService,
+  StreamHealthMonitor,
+  FPSCounter
+} from "../services/index.js";
 
+// Service instances
+const apiService = new APIService();
+const detectionService = new DetectionService();
+const canvasRenderer = new CanvasRenderer();
+const streamHealthMonitor = new StreamHealthMonitor({ apiService });
+const fpsCounter = new FPSCounter();
+const websocketService = new WebSocketService();
+
+// Component state
 const imageElement = ref(null);
 const canvasElement = ref(null);
 const streamStatus = ref("connecting");
@@ -10,263 +26,222 @@ const isProcessing = ref(false);
 const processingError = ref("");
 const detectionCount = ref(0);
 const lastDetectionTime = ref(null);
-const sourceType = ref(""); // camera or video
 
-// Canvas dimensions - will match image size
-const canvasWidth = ref(640);
-const canvasHeight = ref(480);
+// Frame dimensions
+const frameWidth = ref(640);
+const frameHeight = ref(480);
+const fps = ref(0);
+
+// Frame synchronization
+const currentVideoTime = ref(0);
+const detectionBuffer = ref([]); // Store all detections with timestamps
+const timeSync = ref(0); // Offset adjustment in seconds
 
 const statusText = {
-  connected: "Connected - Real-time Helmet & Glove Detection",
+  connected: "Connected - Real-time Video Detection",
   connecting: "Connecting to backend...",
   reconnecting: "Reconnecting...",
   disconnected: "Connection Lost"
 };
 
-onMounted(() => {
-  checkStreamHealth();
-  setInterval(checkStreamHealth, 5000);
-  
-  // Setup WebSocket for annotations
-  setupAnnotationListener();
-  
-  // Check processing status
-  checkProcessingStatus();
-  setInterval(checkProcessingStatus, 2000);
-  
-  // Start rendering detections
+let renderAnimationId = null;
+
+onMounted(async () => {
+  // Initialize services
+  setupStreamHealthMonitoring();
+  setupWebSocketListening();
   startRenderLoop();
+
+  // Connect WebSocket
+  try {
+    await websocketService.connect();
+  } catch (error) {
+    console.error("Failed to connect WebSocket:", error);
+  }
 });
 
-const checkStreamHealth = async () => {
-  try {
-    const response = await fetch("http://localhost:3001/health");
-    if (response.ok) {
-      const data = await response.json();
-      if (data.status === "ok") {
-        streamStatus.value = "connected";
-      } else {
-        handleStreamError();
-      }
-    } else {
-      handleStreamError();
-    }
-  } catch (error) {
-    handleStreamError();
+onUnmounted(() => {
+  if (renderAnimationId) {
+    cancelAnimationFrame(renderAnimationId);
   }
-};
+  streamHealthMonitor.shutdown();
+  websocketService.disconnect();
+});
 
-const handleStreamError = () => {
-  streamStatus.value = "reconnecting";
-  setTimeout(checkStreamHealth, 2000);
-};
-
-const drawAnnotations = () => {
-  if (!canvasElement.value || !imageElement.value) return;
-  
-  const canvas = canvasElement.value;
-  const img = imageElement.value;
-  const ctx = canvas.getContext("2d");
-  
-  // Set canvas size to match image
-  canvas.width = img.width;
-  canvas.height = img.height;
-  
-  // Clear canvas
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  
-  // Draw each annotation
-  displayedAnnotations.value.forEach((annotation) => {
-    if (!annotation.boundingBox) return;
-    
-    const box = annotation.boundingBox;
-    const x = (box.x / 100) * canvas.width;
-    const y = (box.y / 100) * canvas.height;
-    const width = (box.width / 100) * canvas.width;
-    const height = (box.height / 100) * canvas.height;
-    
-    // Color based on confidence
-    const color = annotation.confidence > 0.8 ? "#ef4444" : "#f59e0b";
-    
-    // Draw bounding box
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(x, y, width, height);
-    
-    // Draw label background
-    const label = `${annotation.type}`;
-    ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
-    ctx.font = "bold 14px Arial";
-    const textWidth = ctx.measureText(label).width;
-    ctx.fillRect(x, y - 28, textWidth + 10, 24);
-    
-    // Draw label text
-    ctx.fillStyle = color;
-    ctx.fillText(label, x + 5, y - 9);
-    
-    // Draw confidence percentage
-    const confidenceText = `${(annotation.confidence * 100).toFixed(1)}%`;
-    ctx.fillStyle = color;
-    ctx.font = "bold 12px Arial";
-    ctx.fillText(confidenceText, x + 5, y + height + 18);
+const setupStreamHealthMonitoring = () => {
+  streamHealthMonitor.on('statusChanged', (data) => {
+    streamStatus.value = data.status;
+    frameWidth.value = streamHealthMonitor.frameWidth;
+    frameHeight.value = streamHealthMonitor.frameHeight;
   });
+
+  streamHealthMonitor.start();
+};
+
+const setupWebSocketListening = () => {
+  websocketService.on('PPE_DETECTION_BATCH_VIDEO', (data) => {
+    console.log('📹 Video detection batch received:', data.count, 'detections');
+    handleDetectionBatch(data);
+  });
+
+  websocketService.on('VIDEO_ERROR', (data) => {
+    console.error('❌ Video error:', data);
+    processingError.value = `${data.error}: ${data.message}`;
+    streamStatus.value = "disconnected";
+    isProcessing.value = false;
+
+    setTimeout(() => {
+      processingError.value = "";
+    }, 5000);
+  });
+
+  websocketService.on('connected', () => {
+    console.log("✅ WebSocket connected");
+    streamStatus.value = "connected";
+  });
+
+  websocketService.on('disconnected', () => {
+    console.log("❌ WebSocket disconnected");
+    streamStatus.value = "disconnected";
+  });
+
+  websocketService.on('error', (error) => {
+    console.error("❌ WebSocket error:", error);
+    streamStatus.value = "reconnecting";
+  });
+};
+
+const handleDetectionBatch = (data) => {
+  console.log('📊 Handling batch:', { predictions: data.predictions?.length, frame: data.frame, source: data.source });
   
-  // Draw stats panel
-  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-  ctx.fillRect(0, 0, 300, 80);
+  const detectionData = detectionService.parseDetectionData(data);
+
+  frameWidth.value = detectionData.frameWidth;
+  frameHeight.value = detectionData.frameHeight;
+
+  // Calculate timestamp based on frame number
+  // Assuming frames are extracted at a certain rate (e.g., 1 per 2 seconds based on FRAME_SAMPLE_RATE=2)
+  const frameTimestamp = (data.frame || 0) * 2; // 2 seconds per frame (configurable)
   
-  ctx.fillStyle = "#fff";
-  ctx.font = "bold 16px Arial";
-  ctx.fillText(`Detections: ${detectionCount.value}`, 15, 25);
-  
-  ctx.font = "14px Arial";
-  ctx.fillText(`Active: ${displayedAnnotations.value.length}`, 15, 50);
-  
-  if (lastDetectionTime.value) {
-    const timeDiff = Math.floor((Date.now() - lastDetectionTime.value) / 1000);
-    ctx.fillText(`Last: ${timeDiff}s ago`, 15, 70);
+  // Store detections with timestamp
+  const annotationsWithTime = detectionData.predictions.map(p => ({
+    ...detectionService.createAnnotation(p, detectionData.frame, detectionData.source),
+    timestamp: frameTimestamp,
+    receivedAt: Date.now()
+  }));
+
+  // Add to buffer (keep last 50 detections)
+  detectionBuffer.value.push(...annotationsWithTime);
+  if (detectionBuffer.value.length > 50) {
+    detectionBuffer.value = detectionBuffer.value.slice(-50);
   }
+
+  detectionCount.value += annotationsWithTime.length;
+  lastDetectionTime.value = Date.now();
   
-  // Draw processing status
-  if (isProcessing.value) {
-    ctx.fillStyle = "#10b981";
-    ctx.fillRect(canvas.width - 180, 10, 170, 30);
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 14px Arial";
-    ctx.fillText("🔴 PROCESSING LIVE", canvas.width - 170, 30);
+  console.log('📌 Detection buffer size:', detectionBuffer.value.length, 'Timestamp:', frameTimestamp);
+};
+
+const drawFrame = () => {
+  const canvas = canvasElement.value;
+  const video = imageElement.value;
+
+  if (!canvas || !video) {
+    return;
   }
+
+  // For video element, check if it has valid dimensions
+  if (video.tagName === 'VIDEO' && (video.videoWidth === 0 || video.videoHeight === 0)) {
+    return;
+  }
+
+  // Track current playback time
+  currentVideoTime.value = video.currentTime || 0;
+
+  // Set canvas size to match video dimensions
+  if (video.videoWidth > 0 && video.videoHeight > 0) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    // Draw current video frame to canvas
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+  }
+
+  fpsCounter.record();
+  fps.value = fpsCounter.getFPS();
+
+  // Filter annotations by video playback time
+  // Show detections from a 2-second window around current playback time
+  const timeWindow = 2; // seconds
+  const minTime = currentVideoTime.value - 0.5;
+  const maxTime = currentVideoTime.value + timeWindow;
+
+  const currentTimeAnnotations = detectionBuffer.value.filter(a => {
+    const annotationTime = a.timestamp || 0;
+    return annotationTime >= minTime && annotationTime <= maxTime;
+  });
+
+  console.log(`⏱️ Video time: ${currentVideoTime.value.toFixed(1)}s | Showing ${currentTimeAnnotations.length} annotations`);
+
+  const stats = {
+    totalDetections: detectionCount.value,
+    activeCount: currentTimeAnnotations.length,
+    fps: fps.value
+  };
+
+  displayedAnnotations.value = currentTimeAnnotations;
+  canvasRenderer.render(canvas, currentTimeAnnotations, stats, isProcessing.value);
 };
 
 const startRenderLoop = () => {
   const render = () => {
-    drawAnnotations();
-    requestAnimationFrame(render);
+    drawFrame();
+    renderAnimationId = requestAnimationFrame(render);
   };
-  render();
+
+  renderAnimationId = requestAnimationFrame(render);
 };
 
-// Processing control functions
 const startProcessing = async () => {
   try {
     processingError.value = "";
-    const response = await fetch("http://localhost:3001/api/start-processing", {
-      method: "POST"
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      sourceType.value = data.source || "unknown";
-      isProcessing.value = true;
-      console.log("✅ Processing started:", data);
-    } else {
-      const error = await response.json();
-      processingError.value = error.error || "Failed to start processing";
-      console.error("❌ Start processing failed:", error);
-    }
+    await apiService.startVideoProcessing("street_vehicles_people.mp4");
+    isProcessing.value = true;
+    console.log("✅ Video Processing started");
   } catch (error) {
     processingError.value = "Connection error: " + error.message;
-    console.error("❌ Error starting processing:", error);
+    console.error("❌ Error starting video processing:", error);
   }
 };
 
 const stopProcessing = async () => {
   try {
     processingError.value = "";
-    const response = await fetch("http://localhost:3001/api/stop-processing", {
-      method: "POST"
-    });
+    await apiService.stopVideoProcessing();
+    isProcessing.value = false;
+    displayedAnnotations.value = [];
+    detectionBuffer.value = [];
+    currentVideoTime.value = 0;
 
-    if (response.ok) {
-      isProcessing.value = false;
-      console.log("✅ Processing stopped");
-    } else {
-      const error = await response.json();
-      processingError.value = error.error || "Failed to stop processing";
-      console.error("❌ Stop processing failed:", error);
-    }
+    console.log("✅ Video Processing stopped");
   } catch (error) {
     processingError.value = "Connection error: " + error.message;
-    console.error("❌ Error stopping processing:", error);
+    console.error("❌ Error stopping video processing:", error);
   }
-};
-
-const checkProcessingStatus = async () => {
-  try {
-    const response = await fetch("http://localhost:3001/api/status");
-    if (response.ok) {
-      const data = await response.json();
-      isProcessing.value = data.isProcessing;
-    }
-  } catch (error) {
-    console.error("❌ Error checking status:", error);
-  }
-};
-
-// Update WebSocket message handler
-const setupAnnotationListener = () => {
-  const handleMessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      console.log("📨 Detection received:", data);
-      
-      // Handle PPE_DETECTION events from Roboflow
-      if (data.eventType === "PPE_DETECTION") {
-        const annotation = {
-          type: data.type || "PPE_Missing",
-          frame: data.frame,
-          confidence: data.confidence || 0,
-          timestamp: data.timestamp || new Date().toISOString(),
-          boundingBox: data.boundingBox || {
-            x: 0,
-            y: 0,
-            width: 20,
-            height: 30
-          }
-        };
-        
-        lastDetectionTime.value = Date.now();
-        displayedAnnotations.value.unshift(annotation);
-        detectionCount.value++;
-        
-        // Keep last 20 detections
-        if (displayedAnnotations.value.length > 20) {
-          displayedAnnotations.value.pop();
-        }
-        
-        console.log("✅ Detection rendered. Total:", displayedAnnotations.value.length);
-      }
-    } catch (error) {
-      console.error("❌ Error processing detection:", error);
-    }
-  };
-  
-  socket.addEventListener("open", () => {
-    console.log("✅ WebSocket connected");
-  });
-  
-  socket.addEventListener("close", () => {
-    console.log("❌ WebSocket disconnected");
-  });
-  
-  socket.addEventListener("error", (error) => {
-    console.error("❌ WebSocket error:", error);
-  });
-  
-  socket.addEventListener("message", handleMessage);
 };
 </script>
 
 <template>
   <div class="stream-container">
     <div class="stream-header">
-      <h2><i class="fas fa-shield-alt"></i> Roboflow PPE Detection</h2>
+      <h2><i class="fas fa-film"></i> Video Stream Detection</h2>
       <div class="status-indicator" :class="streamStatus">
         <span class="status-dot"></span>
         <span class="status-text">{{ statusText[streamStatus] }}</span>
       </div>
     </div>
 
-    <!-- Processing Controls -->
     <div class="processing-controls">
       <div class="control-group">
         <button 
@@ -274,29 +249,28 @@ const setupAnnotationListener = () => {
           @click="startProcessing"
           class="btn btn-primary"
         >
-          <i class="fas fa-play"></i> Start Processing
+          <i class="fas fa-play"></i> Start Detection
         </button>
         <button 
           v-else
           @click="stopProcessing"
           class="btn btn-danger"
         >
-          <i class="fas fa-stop"></i> Stop Processing
+          <i class="fas fa-stop"></i> Stop Detection
         </button>
       </div>
       <div class="control-info">
         <span v-if="isProcessing" class="status-badge processing">
-          <i class="fas fa-spinner fa-spin"></i> LIVE
+          <i class="fas fa-spinner fa-spin"></i> DETECTING
         </span>
         <span v-else class="status-badge idle">
           <i class="fas fa-pause"></i> IDLE
         </span>
         <span class="detection-count">
-          <i class="fas fa-shield-alt"></i> {{ detectionCount }} Detections
+          <i class="fas fa-shield-alt"></i> {{ detectionCount }} Total
         </span>
-        <span v-if="sourceType" class="source-badge" :class="sourceType">
-          <i :class="sourceType === 'camera' ? 'fas fa-video' : 'fas fa-film'"></i>
-          {{ sourceType === 'camera' ? '📷 LIVE CAMERA' : '🎬 VIDEO FILE' }}
+        <span class="fps-badge">
+          <i class="fas fa-tachometer-alt"></i> {{ fps.toFixed(1) }} FPS
         </span>
       </div>
       <div v-if="processingError" class="error-message">
@@ -304,47 +278,88 @@ const setupAnnotationListener = () => {
       </div>
     </div>
 
-    <!-- Stream Display -->
-    <div class="canvas-wrapper">
-      <div class="stream-container">
-        <!-- MJPEG Stream from backend -->
-        <img 
-          ref="imageElement"
-          src="http://localhost:3001/stream"
-          alt="Live Camera Stream"
-          class="stream-image"
-          @load="drawAnnotations"
-        />
-        <!-- Canvas overlay for detections -->
-        <canvas 
-          ref="canvasElement"
-          class="detection-canvas"
-        ></canvas>
-      </div>
-    </div>
-
-    <!-- Live Detections List -->
-    <div class="detections-panel">
-      <div class="detections-header">
-        <h3><i class="fas fa-list"></i> Live Detections</h3>
-        <span class="detection-badge">{{ displayedAnnotations.length }}</span>
-      </div>
-      <div class="detections-list">
-        <div v-if="displayedAnnotations.length === 0" class="empty-state">
-          <p><i class="fas fa-inbox"></i> Waiting for detections...</p>
-        </div>
-        <div 
-          v-for="(annotation, index) in displayedAnnotations" 
-          :key="index"
-          class="detection-item"
-          :class="{ 'high-confidence': annotation.confidence > 0.8 }"
-        >
-          <div class="detection-main">
-            <span class="detection-type">{{ annotation.type }}</span>
-            <span class="detection-confidence">{{ (annotation.confidence * 100).toFixed(1) }}%</span>
+    <div class="main-content">
+      <div class="video-section">
+        <div class="canvas-wrapper">
+          <div class="stream-container-inner">
+            <video 
+              ref="imageElement"
+              :src="apiService.getVideoStreamUrl()"
+              alt="Video Stream"
+              class="stream-image"
+              autoplay
+              loop
+              muted
+              @loadstart="drawFrame"
+              @play="drawFrame"
+              @timeupdate="drawFrame"
+              @error="() => streamStatus = 'disconnected'"
+            ></video>
+            <canvas 
+              ref="canvasElement"
+              class="detection-canvas"
+            ></canvas>
           </div>
-          <div class="detection-meta">
-            <small>Frame #{{ annotation.frame }} • {{ new Date(annotation.timestamp).toLocaleTimeString() }}</small>
+        </div>
+      </div>
+
+      <div class="video-info-panel">
+        <div class="panel-header">
+          <h3><i class="fas fa-info-circle"></i> Video Info</h3>
+          <div class="live-badge">
+            <span class="live-dot"></span> LIVE
+          </div>
+        </div>
+
+        <div class="info-content">
+          <div class="info-item">
+            <div class="info-label">Status</div>
+            <div class="info-value">
+              <span :class="['status-tag', isProcessing ? 'detecting' : 'idle']">
+                {{ isProcessing ? '🟢 DETECTING' : '⊚ IDLE' }}
+              </span>
+            </div>
+          </div>
+
+          <div class="info-item">
+            <div class="info-label">Total Detections</div>
+            <div class="info-value large">{{ detectionCount }}</div>
+          </div>
+
+          <div class="info-item">
+            <div class="info-label">Current Annotations</div>
+            <div class="info-value large">{{ displayedAnnotations.length }}</div>
+          </div>
+
+          <div class="info-item">
+            <div class="info-label">Frame Rate</div>
+            <div class="info-value">{{ fps.toFixed(1) }} FPS</div>
+          </div>
+
+          <div class="info-item">
+            <div class="info-label">Resolution</div>
+            <div class="info-value">{{ frameWidth }}×{{ frameHeight }}</div>
+          </div>
+
+          <div class="info-item">
+            <div class="info-label">Current Time</div>
+            <div class="info-value">{{ Math.floor(currentVideoTime).toString().padStart(2, '0') }}:{{ (Math.floor((currentVideoTime % 1) * 60)).toString().padStart(2, '0') }}</div>
+          </div>
+
+          <div class="info-item">
+            <div class="info-label">Buffer Size</div>
+            <div class="info-value">{{ detectionBuffer.length }} items</div>
+          </div>
+        </div>
+
+        <div class="panel-footer">
+          <div class="footer-item">
+            <span class="footer-label">Source</span>
+            <span class="footer-value">Local YOLO</span>
+          </div>
+          <div class="footer-item">
+            <span class="footer-label">Mode</span>
+            <span class="footer-value">Video</span>
           </div>
         </div>
       </div>
@@ -361,7 +376,7 @@ const setupAnnotationListener = () => {
 }
 
 .stream-header {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
   color: white;
   padding: 25px;
   display: flex;
@@ -390,14 +405,15 @@ const setupAnnotationListener = () => {
 
 .status-dot {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   animation: pulse 2s infinite;
 }
 
 .status-indicator.connected .status-dot {
   background: #10b981;
+  box-shadow: 0 0 10px #10b981;
 }
 
 .status-indicator.connecting .status-dot,
@@ -410,8 +426,8 @@ const setupAnnotationListener = () => {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(1.1); }
 }
 
 .processing-controls {
@@ -419,9 +435,10 @@ const setupAnnotationListener = () => {
   background: #f3f4f6;
   border-bottom: 1px solid #e5e7eb;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
-  gap: 20px;
+  gap: 15px;
 }
 
 .control-group {
@@ -431,55 +448,62 @@ const setupAnnotationListener = () => {
 
 .control-info {
   display: flex;
-  gap: 15px;
+  flex-wrap: wrap;
+  gap: 10px;
   align-items: center;
 }
 
 .btn {
-  padding: 10px 20px;
+  padding: 12px 24px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   font-weight: 600;
   cursor: pointer;
   display: flex;
   align-items: center;
   gap: 8px;
   transition: all 0.3s;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .btn-primary {
-  background: #3b82f6;
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
   color: white;
 }
 
 .btn-primary:hover {
-  background: #2563eb;
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
   transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.3);
 }
 
 .btn-danger {
-  background: #ef4444;
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
   color: white;
 }
 
 .btn-danger:hover {
-  background: #dc2626;
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
   transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(239, 68, 68, 0.3);
 }
 
-.status-badge {
-  padding: 6px 12px;
+.status-badge,
+.fps-badge,
+.detection-count {
+  padding: 8px 14px;
   border-radius: 20px;
   font-size: 0.85rem;
   font-weight: 600;
   display: flex;
   align-items: center;
   gap: 6px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .status-badge.processing {
-  background: #dcfce7;
-  color: #166534;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
 }
 
 .status-badge.idle {
@@ -487,46 +511,39 @@ const setupAnnotationListener = () => {
   color: #6b7280;
 }
 
-.source-badge {
-  padding: 6px 12px;
-  border-radius: 20px;
-  font-size: 0.85rem;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.source-badge.camera {
-  background: #fca5a5;
-  color: #7f1d1d;
-}
-
-.source-badge.video {
-  background: #a5f3fc;
-  color: #0c4a6e;
+.fps-badge {
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  color: white;
 }
 
 .detection-count {
-  padding: 6px 12px;
-  background: #f0fdf4;
-  color: #15803d;
-  border-radius: 6px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
 }
 
 .error-message {
-  padding: 10px 15px;
+  flex-basis: 100%;
+  padding: 12px 16px;
   background: #fee2e2;
   color: #991b1b;
-  border-radius: 6px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   gap: 8px;
   font-weight: 500;
+  border-left: 4px solid #dc2626;
+}
+
+.main-content {
+  display: flex;
+  gap: 20px;
+  padding: 20px;
+  background: #f9fafb;
+}
+
+.video-section {
+  flex: 1;
+  min-width: 0;
 }
 
 .canvas-wrapper {
@@ -534,12 +551,12 @@ const setupAnnotationListener = () => {
   display: flex;
   justify-content: center;
   align-items: center;
-  overflow: auto;
-  max-height: 700px;
-  min-height: 400px;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
 }
 
-.stream-container {
+.stream-container-inner {
   position: relative;
   display: inline-block;
   max-width: 100%;
@@ -549,7 +566,7 @@ const setupAnnotationListener = () => {
   display: block;
   max-width: 100%;
   height: auto;
-  border-radius: 4px;
+  background: #000;
 }
 
 .detection-canvas {
@@ -557,104 +574,158 @@ const setupAnnotationListener = () => {
   top: 0;
   left: 0;
   cursor: crosshair;
-  border-radius: 4px;
+  pointer-events: none;
 }
 
-.detections-panel {
-  background: #f9fafb;
-  border-top: 1px solid #e5e7eb;
+.video-info-panel {
+  width: 380px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  max-height: 700px;
+  overflow: hidden;
 }
 
-.detections-header {
-  padding: 15px 20px;
+.panel-header {
+  padding: 20px;
+  border-bottom: 2px solid #e5e7eb;
+  background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #e5e7eb;
-  background: white;
 }
 
-.detections-header h3 {
+.panel-header h3 {
   margin: 0;
+  font-size: 1.2rem;
+  color: #1f2937;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.live-badge {
+  padding: 8px 14px;
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: white;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.5px;
+}
+
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background: white;
+  border-radius: 50%;
+  animation: blink 1.5s infinite;
+}
+
+@keyframes blink {
+  0%, 49%, 100% { opacity: 1; }
+  50%, 99% { opacity: 0.3; }
+}
+
+.info-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.info-item {
+  padding: 15px;
+  background: #f9fafb;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+}
+
+.info-label {
+  font-size: 0.75rem;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.info-value {
   font-size: 1rem;
   color: #1f2937;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.detection-badge {
-  background: #3b82f6;
-  color: white;
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 0.85rem;
   font-weight: 600;
 }
 
-.detections-list {
-  max-height: 300px;
-  overflow-y: auto;
+.info-value.large {
+  font-size: 1.8rem;
+  color: #8b5cf6;
 }
 
-.empty-state {
-  padding: 40px 20px;
-  text-align: center;
-  color: #9ca3af;
-  font-size: 0.95rem;
+.status-tag {
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 700;
 }
 
-.empty-state i {
-  font-size: 2rem;
-  display: block;
-  margin-bottom: 10px;
-  opacity: 0.5;
+.status-tag.detecting {
+  background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
+  color: #059669;
 }
 
-.detection-item {
-  padding: 12px 20px;
-  border-bottom: 1px solid #e5e7eb;
-  background: white;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.detection-item:hover {
+.status-tag.idle {
   background: #f3f4f6;
-}
-
-.detection-item.high-confidence {
-  border-left: 4px solid #ef4444;
-}
-
-.detection-main {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-
-.detection-type {
-  font-weight: 600;
-  color: #1f2937;
-}
-
-.detection-confidence {
-  background: #fee2e2;
-  color: #991b1b;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 0.85rem;
-  font-weight: 600;
-}
-
-.detection-item.high-confidence .detection-confidence {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.detection-meta {
   color: #6b7280;
-  font-size: 0.85rem;
+}
+
+.panel-footer {
+  padding: 20px;
+  border-top: 2px solid #e5e7eb;
+  background: #f9fafb;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 15px;
+}
+
+.footer-item {
+  text-align: center;
+  padding: 10px;
+}
+
+.footer-label {
+  display: block;
+  font-size: 0.7rem;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.footer-value {
+  display: block;
+  font-size: 1rem;
+  color: #1f2937;
+  font-weight: 700;
+}
+
+@media (max-width: 1400px) {
+  .main-content {
+    flex-direction: column;
+  }
+  
+  .video-info-panel {
+    width: 100%;
+    max-height: 400px;
+  }
 }
 </style>

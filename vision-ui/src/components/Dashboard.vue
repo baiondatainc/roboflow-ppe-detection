@@ -1,6 +1,8 @@
 <script setup>
 import { ref, onMounted, computed } from "vue";
-import socket from "../services/socket";
+import { WebSocketService } from "../services/index.js";
+
+const websocketService = new WebSocketService();
 
 const violationStats = ref({
   total: 0,
@@ -8,250 +10,157 @@ const violationStats = ref({
   byType: {}
 });
 
-const connectionStatus = ref("connected");
+const connectionStatus = ref("connecting");
 const lastUpdated = ref(new Date());
-const detectionMetrics = ref({
-  accuracy: 0,
-  processTime: 0,
-  detectionRate: 0
-});
-
 const isProcessing = ref(false);
 
-onMounted(() => {
-  socket.addEventListener("message", (event) => {
-    const data = JSON.parse(event.data);
-    
-    if (data.type === "SYSTEM") {
-      console.log("✅ System message:", data.message);
-    } else if (data.eventType === "PPE_VIOLATION") {
-      violationStats.value.total++;
-      violationStats.value.recentCount++;
-      
-      const violationType = data.type || data.label || "Unknown";
-      violationStats.value.byType[violationType] = (violationStats.value.byType[violationType] || 0) + 1;
-      
-      lastUpdated.value = new Date();
-      
-      // Reset recent count every minute
-      setTimeout(() => {
-        violationStats.value.recentCount = 0;
-      }, 60000);
-    }
+const detectionMetrics = computed(() => ({
+  totalViolations: violationStats.value.total,
+  recentViolations: violationStats.value.recentCount,
+  violationTypes: Object.keys(violationStats.value.byType).length
+}));
+
+onMounted(async () => {
+  try {
+    await websocketService.connect();
+  } catch (error) {
+    console.error("Failed to connect:", error);
+  }
+
+  websocketService.on('PPE_VIOLATION', (data) => {
+    violationStats.value.total++;
+    violationStats.value.recentCount++;
+
+    const violationType = data.type || "Unknown";
+    violationStats.value.byType[violationType] = 
+      (violationStats.value.byType[violationType] || 0) + 1;
+
+    lastUpdated.value = new Date();
+
+    setTimeout(() => {
+      violationStats.value.recentCount = 0;
+    }, 60000);
   });
 
-  // Simulate metrics update
-  setInterval(() => {
-    detectionMetrics.value.accuracy = (Math.random() * 5 + 94).toFixed(1);
-    detectionMetrics.value.processTime = (Math.random() * 50 + 100).toFixed(0);
-    detectionMetrics.value.detectionRate = (Math.random() * 20 + 75).toFixed(1);
-  }, 3000);
+  websocketService.on('connected', () => {
+    connectionStatus.value = "connected";
+  });
 
-  checkConnectionStatus();
-  loadStats();
+  websocketService.on('disconnected', () => {
+    connectionStatus.value = "disconnected";
+  });
+
+  checkProcessingStatus();
+  setInterval(checkProcessingStatus, 2000);
 });
 
-const checkConnectionStatus = () => {
-  setInterval(() => {
-    const timeSinceUpdate = Date.now() - lastUpdated.value;
-    if (timeSinceUpdate > 10000) {
-      connectionStatus.value = "warning";
-    } else {
-      connectionStatus.value = "connected";
-    }
-  }, 5000);
-};
-
-const loadStats = async () => {
+const checkProcessingStatus = async () => {
   try {
-    const response = await fetch("http://localhost:3001/stats");
-    const stats = await response.json();
-    isProcessing.value = stats.processing?.isActive || false;
+    const response = await fetch("http://localhost:3001/api/status");
+    if (response.ok) {
+      const data = await response.json();
+      isProcessing.value = data.isProcessingWebcam || data.isProcessingVideo || false;
+    }
   } catch (error) {
-    console.error("Failed to load stats:", error);
+    // Silently fail
   }
 };
 
-const toggleProcessing = async () => {
-  const messageType = isProcessing.value ? "STOP_DETECTION" : "START_DETECTION";
-  socket.send(JSON.stringify({ type: messageType }));
-  console.log(`📡 Sent: ${messageType}`);
+const resetStats = () => {
+  violationStats.value = {
+    total: 0,
+    recentCount: 0,
+    byType: {}
+  };
 };
-
-const topViolations = computed(() => {
-  return Object.entries(violationStats.value.byType)
-    .map(([type, count]) => ({ type, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 5);
-});
-
-const getConnectionColor = () => {
-  return connectionStatus.value === "connected" ? "#10b981" : "#f59e0b";
-};
-
 </script>
 
 <template>
-  <div class="dashboard-container">
-    <!-- Status Overview -->
-    <div class="status-banner" :class="connectionStatus">
-      <div class="banner-content">
-        <i class="fas fa-info-circle"></i>
-        <div>
-          <h3>System Status</h3>
-          <p v-if="connectionStatus === 'connected'">
-            Connected and receiving real-time PPE violation alerts from Roboflow
-          </p>
-          <p v-else>
-            Connection unstable - last update {{ Math.floor((Date.now() - lastUpdated) / 1000) }} seconds ago
-          </p>
-        </div>
+  <div class="dashboard">
+    <div class="dashboard-header">
+      <h1><i class="fas fa-chart-line"></i> PPE Detection Dashboard</h1>
+      <div class="header-status">
+        <span 
+          class="connection-badge"
+          :class="connectionStatus"
+        >
+          <i class="fas fa-circle"></i>
+          {{ connectionStatus === 'connected' ? 'Connected' : 'Disconnected' }}
+        </span>
+        <span 
+          class="processing-badge"
+          :class="{ active: isProcessing }"
+        >
+          <i class="fas fa-spinner fa-spin" v-if="isProcessing"></i>
+          {{ isProcessing ? 'Processing' : 'Idle' }}
+        </span>
       </div>
-      <div class="status-dot" :style="{ backgroundColor: getConnectionColor() }"></div>
     </div>
 
-    <!-- Key Metrics -->
     <div class="metrics-grid">
       <div class="metric-card">
         <div class="metric-icon">
-          <i class="fas fa-exclamation-circle"></i>
+          <i class="fas fa-exclamation-triangle"></i>
         </div>
         <div class="metric-content">
-          <div class="metric-value">{{ violationStats.total }}</div>
           <div class="metric-label">Total Violations</div>
-          <div class="metric-change">+{{ violationStats.recentCount }} in last minute</div>
+          <div class="metric-value">{{ detectionMetrics.totalViolations }}</div>
         </div>
       </div>
 
       <div class="metric-card">
         <div class="metric-icon">
-          <i class="fas fa-percent"></i>
+          <i class="fas fa-clock"></i>
         </div>
         <div class="metric-content">
-          <div class="metric-value">{{ detectionMetrics.accuracy }}%</div>
-          <div class="metric-label">Detection Accuracy</div>
-          <div class="metric-change">Real-time measurement</div>
+          <div class="metric-label">Recent (1 min)</div>
+          <div class="metric-value">{{ detectionMetrics.recentViolations }}</div>
         </div>
       </div>
 
       <div class="metric-card">
         <div class="metric-icon">
-          <i class="fas fa-tachometer-alt"></i>
+          <i class="fas fa-tags"></i>
         </div>
         <div class="metric-content">
-          <div class="metric-value">{{ detectionMetrics.processTime }}ms</div>
-          <div class="metric-label">Processing Time</div>
-          <div class="metric-change">Average latency</div>
+          <div class="metric-label">Violation Types</div>
+          <div class="metric-value">{{ detectionMetrics.violationTypes }}</div>
         </div>
       </div>
 
       <div class="metric-card">
         <div class="metric-icon">
-          <i class="fas fa-video"></i>
+          <i class="fas fa-sync"></i>
         </div>
         <div class="metric-content">
-          <div class="metric-value">{{ detectionMetrics.detectionRate }}%</div>
-          <div class="metric-label">Detection Rate</div>
-          <div class="metric-change">Frame coverage</div>
+          <div class="metric-label">Last Updated</div>
+          <div class="metric-value">{{ lastUpdated.toLocaleTimeString() }}</div>
         </div>
       </div>
     </div>
 
-    <!-- Charts Section -->
-    <div class="charts-grid">
-      <!-- Violation Types Chart -->
-      <div class="chart-card">
-        <h3><i class="fas fa-chart-bar"></i> Top Violation Types</h3>
-        <div class="chart-content">
-          <div v-if="topViolations.length === 0" class="empty-chart">
-            <p>No violations recorded yet</p>
-          </div>
-          <div v-else class="bar-chart">
-            <div 
-              v-for="(violation, index) in topViolations" 
-              :key="index"
-              class="bar-item"
-            >
-              <div class="bar-label">{{ violation.type }}</div>
-              <div class="bar-container">
-                <div 
-                  class="bar-fill"
-                  :style="{ 
-                    width: (violation.count / topViolations[0].count) * 100 + '%'
-                  }"
-                ></div>
-              </div>
-              <div class="bar-value">{{ violation.count }}</div>
-            </div>
-          </div>
-        </div>
+    <div class="violations-section">
+      <div class="section-header">
+        <h2><i class="fas fa-list"></i> Violations by Type</h2>
+        <button @click="resetStats" class="reset-btn">
+          <i class="fas fa-redo"></i> Reset
+        </button>
       </div>
 
-      <!-- System Info -->
-      <div class="info-card">
-        <h3><i class="fas fa-cog"></i> System Information</h3>
-        <div class="info-list">
-          <div class="info-item">
-            <span class="info-label">Service:</span>
-            <span class="info-value">Google Vertex Vision AI</span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Region:</span>
-            <span class="info-value">us-central1</span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Stream:</span>
-            <span class="info-value">traffic-stream</span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Topic:</span>
-            <span class="info-value">visionai-ppe-events</span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Last Update:</span>
-            <span class="info-value">{{ lastUpdated.toLocaleTimeString() }}</span>
-          </div>
-          <div class="info-item">
-            <span class="info-label">Connection:</span>
-            <span class="info-value" :class="connectionStatus">
-              <i class="fas fa-circle"></i>
-              {{ connectionStatus === 'connected' ? 'Connected' : 'Warning' }}
-            </span>
-          </div>
-        </div>
+      <div v-if="Object.keys(violationStats.byType).length === 0" class="no-data">
+        <i class="fas fa-inbox"></i>
+        <p>No violations recorded yet</p>
       </div>
-    </div>
 
-    <!-- Features Section -->
-    <div class="features-section">
-      <h3><i class="fas fa-star"></i> Key Features</h3>
-      <div class="features-grid">
-        <div class="feature-item">
-          <i class="fas fa-eye"></i>
-          <div>
-            <h4>Real-time Detection</h4>
-            <p>AI-powered PPE violation detection with live video stream analysis</p>
-          </div>
-        </div>
-        <div class="feature-item">
-          <i class="fas fa-bolt"></i>
-          <div>
-            <h4>Instant Alerts</h4>
-            <p>Immediate notifications via Pub/Sub for compliance violations</p>
-          </div>
-        </div>
-        <div class="feature-item">
-          <i class="fas fa-chart-line"></i>
-          <div>
-            <h4>Analytics & Metrics</h4>
-            <p>Track violations, detection accuracy, and system performance</p>
-          </div>
-        </div>
-        <div class="feature-item">
-          <i class="fas fa-cloud"></i>
-          <div>
-            <h4>Cloud Integrated</h4>
-            <p>Powered by Google Cloud Vision AI and Pub/Sub messaging</p>
+      <div v-else class="violations-list">
+        <div 
+          v-for="(count, type) in violationStats.byType"
+          :key="type"
+          class="violation-item"
+        >
+          <div class="violation-type">{{ type }}</div>
+          <div class="violation-count">
+            <span class="count-badge">{{ count }}</span>
           </div>
         </div>
       </div>
@@ -260,325 +169,203 @@ const getConnectionColor = () => {
 </template>
 
 <style scoped>
-.dashboard-container {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
+.dashboard {
+  background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
+  min-height: 100vh;
+  padding: 30px;
 }
 
-.status-banner {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  color: white;
-  padding: 20px 25px;
+.dashboard-header {
+  background: white;
   border-radius: 12px;
+  padding: 30px;
+  margin-bottom: 30px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
-.status-banner.warning {
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-}
-
-.banner-content {
+.dashboard-header h1 {
+  margin: 0;
+  font-size: 2rem;
+  color: #1f2937;
   display: flex;
   align-items: center;
   gap: 15px;
 }
 
-.banner-content i {
-  font-size: 1.8rem;
+.header-status {
+  display: flex;
+  gap: 15px;
 }
 
-.banner-content h3 {
-  margin: 0 0 5px 0;
-  font-size: 1.1rem;
-}
-
-.banner-content p {
-  margin: 0;
+.connection-badge,
+.processing-badge {
+  padding: 10px 16px;
+  border-radius: 20px;
+  font-weight: 600;
   font-size: 0.9rem;
-  opacity: 0.95;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.status-dot {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  animation: pulse 2s infinite;
+.connection-badge.connected {
+  background: #d1fae5;
+  color: #065f46;
 }
 
-@keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.6;
-  }
+.connection-badge.disconnected {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.processing-badge {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.processing-badge.active {
+  background: #d1fae5;
+  color: #065f46;
 }
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 20px;
+  margin-bottom: 30px;
 }
 
 .metric-card {
   background: white;
   border-radius: 12px;
-  padding: 25px;
+  padding: 20px;
   display: flex;
   gap: 15px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  transition: all 0.3s ease;
+  align-items: center;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition: transform 0.3s, box-shadow 0.3s;
 }
 
 .metric-card:hover {
-  transform: translateY(-4px);
+  transform: translateY(-5px);
   box-shadow: 0 8px 12px rgba(0, 0, 0, 0.15);
 }
 
 .metric-icon {
+  font-size: 2rem;
+  width: 60px;
+  height: 60px;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 60px;
-  height: 60px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-radius: 12px;
-  color: white;
-  font-size: 1.5rem;
-  flex-shrink: 0;
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+  color: #0284c7;
+  border-radius: 10px;
 }
 
 .metric-content {
   flex: 1;
 }
 
+.metric-label {
+  font-size: 0.85rem;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
 .metric-value {
-  font-size: 2rem;
+  font-size: 1.8rem;
   font-weight: 700;
   color: #1f2937;
-  line-height: 1;
 }
 
-.metric-label {
-  font-size: 0.9rem;
-  color: #6b7280;
-  margin: 8px 0 4px 0;
-}
-
-.metric-change {
-  font-size: 0.8rem;
-  color: #10b981;
-  font-weight: 500;
-}
-
-.charts-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-  gap: 20px;
-}
-
-.chart-card,
-.info-card {
+.violations-section {
   background: white;
   border-radius: 12px;
-  padding: 25px;
+  padding: 30px;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
 
-.chart-card h3,
-.info-card h3 {
-  margin-top: 0;
-  margin-bottom: 20px;
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 25px;
+  padding-bottom: 15px;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.section-header h2 {
+  margin: 0;
+  color: #1f2937;
   display: flex;
   align-items: center;
   gap: 10px;
-  color: #1f2937;
-  font-size: 1.1rem;
 }
 
-.chart-content {
-  min-height: 200px;
-}
-
-.empty-chart {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 200px;
-  color: #9ca3af;
-}
-
-.bar-chart {
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-}
-
-.bar-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.bar-label {
-  width: 100px;
-  font-size: 0.85rem;
-  color: #6b7280;
-  font-weight: 500;
-}
-
-.bar-container {
-  flex: 1;
-  height: 24px;
-  background: #e5e7eb;
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-  border-radius: 4px;
-  transition: width 0.3s ease;
-}
-
-.bar-value {
-  width: 40px;
-  text-align: right;
+.reset-btn {
+  padding: 10px 16px;
+  background: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
   font-weight: 600;
-  color: #1f2937;
-  font-size: 0.9rem;
-}
-
-.info-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.info-item {
-  display: flex;
-  justify-content: space-between;
-  padding: 12px;
-  background: #f9fafb;
-  border-radius: 8px;
-  border: 1px solid #e5e7eb;
-}
-
-.info-label {
-  color: #6b7280;
-  font-weight: 500;
-  font-size: 0.9rem;
-}
-
-.info-value {
-  color: #1f2937;
-  font-weight: 600;
-  font-size: 0.9rem;
   display: flex;
   align-items: center;
   gap: 6px;
+  transition: background 0.3s;
 }
 
-.info-value.connected {
-  color: #10b981;
+.reset-btn:hover {
+  background: #2563eb;
 }
 
-.info-value.warning {
-  color: #f59e0b;
+.no-data {
+  text-align: center;
+  padding: 40px 20px;
+  color: #9ca3af;
 }
 
-.info-value i {
-  font-size: 0.7rem;
+.no-data i {
+  font-size: 3rem;
+  margin-bottom: 15px;
+  opacity: 0.5;
 }
 
-.features-section {
-  background: white;
-  border-radius: 12px;
-  padding: 25px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-}
-
-.features-section h3 {
-  margin-top: 0;
-  margin-bottom: 20px;
+.violations-list {
   display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.violation-item {
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 10px;
+  padding: 15px;
+  background: #f9fafb;
+  border-radius: 8px;
+  border-left: 4px solid #3b82f6;
+}
+
+.violation-type {
+  font-weight: 600;
   color: #1f2937;
-  font-size: 1.1rem;
+  text-transform: capitalize;
 }
 
-.features-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
-}
-
-.feature-item {
-  display: flex;
-  gap: 15px;
-  align-items: flex-start;
-}
-
-.feature-item i {
-  font-size: 1.5rem;
-  color: #667eea;
-  margin-top: 3px;
-  flex-shrink: 0;
-}
-
-.feature-item h4 {
-  margin: 0 0 5px 0;
-  color: #1f2937;
-  font-size: 0.95rem;
-}
-
-.feature-item p {
-  margin: 0;
-  color: #6b7280;
-  font-size: 0.85rem;
-  line-height: 1.4;
-}
-
-@media (max-width: 768px) {
-  .status-banner {
-    flex-direction: column;
-    gap: 15px;
-  }
-
-  .banner-content {
-    width: 100%;
-  }
-
-  .metrics-grid {
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  }
-
-  .metric-card {
-    flex-direction: column;
-    padding: 15px;
-  }
-
-  .metric-icon {
-    width: 100%;
-    height: 50px;
-  }
-
-  .metric-value {
-    font-size: 1.5rem;
-  }
-
-  .charts-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .features-grid {
-    grid-template-columns: 1fr;
-  }
+.count-badge {
+  background: #3b82f6;
+  color: white;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-weight: 600;
+  font-size: 0.9rem;
 }
 </style>
