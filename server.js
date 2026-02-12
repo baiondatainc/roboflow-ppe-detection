@@ -419,16 +419,34 @@ app.get("/video", (req, res) => {
 
 let webcamBuffer = Buffer.alloc(0);
 const webcamClients2 = new Set();
+let latestWebcamFrame = null;  // Store the latest frame for new clients
 
 app.get("/webcam", (req, res) => {
   console.log("🎥 Webcam stream requested");
   
-  // Set MJPEG headers
+  // Set MJPEG headers with proper connection handling
   res.writeHead(200, {
     "Content-Type": "multipart/x-mixed-replace; boundary=--boundary",
     "Connection": "keep-alive",
-    "Cache-Control": "no-cache"
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Transfer-Encoding": "chunked"
   });
+
+  // Send latest frame immediately if available
+  if (latestWebcamFrame) {
+    try {
+      res.write("--boundary\r\n");
+      res.write("Content-Type: image/jpeg\r\n");
+      res.write(`Content-Length: ${latestWebcamFrame.length}\r\n`);
+      res.write("Content-Disposition: inline; filename=frame.jpg\r\n\r\n");
+      res.write(latestWebcamFrame);
+      res.write("\r\n");
+    } catch (e) {
+      // Ignore write errors during initial frame
+    }
+  }
 
   const frameHandler = (frame) => {
     try {
@@ -439,7 +457,7 @@ app.get("/webcam", (req, res) => {
       res.write(frame);
       res.write("\r\n");
     } catch (e) {
-      // Client disconnected
+      // Client disconnected or connection closed
     }
   };
 
@@ -449,9 +467,30 @@ app.get("/webcam", (req, res) => {
     webcamClients2.delete(frameHandler);
     console.log("🎥 Webcam client disconnected");
   });
+
+  // Handle errors from the client
+  req.on("error", (err) => {
+    webcamClients2.delete(frameHandler);
+    console.log("🎥 Webcam client error:", err.message);
+  });
+
+  // Set a timeout to close inactive connections after 30 seconds
+  const timeout = setTimeout(() => {
+    if (webcamClients2.has(frameHandler)) {
+      webcamClients2.delete(frameHandler);
+      res.end();
+    }
+  }, 30000);
+
+  res.on("close", () => {
+    clearTimeout(timeout);
+  });
 });
 
 function broadcastWebcamFrame(frame) {
+  // Store the latest frame
+  latestWebcamFrame = frame;
+  
   const toRemove = [];
   
   webcamClients2.forEach(handler => {
@@ -479,16 +518,17 @@ app.post("/api/start-webcam-processing", (_, res) => {
   console.log("\n🎥 Starting webcam PPE detection...");
   console.log(`⚙️  Settings: Confidence=${CONFIDENCE}, Overlap=${OVERLAP}, SampleRate=1/${FRAME_SAMPLE_RATE}`);
 
-  // IMPROVED: Better webcam settings for higher quality
+  // IMPROVED: Optimized webcam settings for low latency and speed
   webcamProcess = spawn("ffmpeg", [
     "-f", "v4l2",
     "-video_size", "640x480",
-    "-framerate", "30",  // Increased from 15
+    "-framerate", "30",
+    "-input_format", "yuyv422",  // Use native camera format (faster)
     "-i", "/dev/video0",
-    "-vf", "fps=5",  // Extract 5 frames per second (increased from 1)
+    "-vf", "fps=10",  // 10 fps = better performance than 5 fps
     "-f", "image2pipe",
     "-vcodec", "mjpeg",
-    "-q:v", "2",  // High quality JPEG
+    "-q:v", "2",
     "-"
   ]);
 

@@ -50,7 +50,9 @@ def decode_image(image_data):
 def detect_persons(frame, conf_threshold=0.5):
     """Detect persons using YOLOv8l"""
     try:
-        results = person_model(frame, conf=conf_threshold, verbose=False)
+        # Use minimum 0.5 confidence to avoid false positives
+        min_conf = max(0.5, conf_threshold)
+        results = person_model(frame, conf=min_conf, verbose=False)
         detections = []
         
         for result in results:
@@ -75,7 +77,9 @@ def detect_persons(frame, conf_threshold=0.5):
 def detect_hathats(frame, conf_threshold=0.5):
     """Detect hard hats using hardhat-best.pt"""
     try:
-        results = hardhat_model(frame, conf=conf_threshold, verbose=False)
+        # Use minimum 0.6 confidence for hard hats (stricter than person detection)
+        min_conf = max(0.6, conf_threshold)
+        results = hardhat_model(frame, conf=min_conf, verbose=False)
         detections = []
         
         for result in results:

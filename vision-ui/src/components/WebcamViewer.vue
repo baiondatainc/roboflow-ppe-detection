@@ -76,11 +76,6 @@ onMounted(() => {
   
   // Update PPE status every 500ms
   setInterval(updatePPEStatus, 500);
-  
-  // Force image refresh every 100ms to bypass cache
-  setInterval(() => {
-    imageRefreshCounter.value++;
-  }, 100);
 });
 
 onUnmounted(() => {
@@ -183,10 +178,10 @@ const drawAnnotations = () => {
   // Get latest frame annotations
   const latestFrame = Math.max(...displayedAnnotations.value.map(a => a.frame || 0));
   const currentFrameAnnotations = displayedAnnotations.value.filter(a => 
-    a.frame === latestFrame && a.boundingBox
+    a.frame === latestFrame && a.boundingBox && a.type?.toLowerCase() !== 'person'
   );
   
-  // Draw each annotation
+  // Draw each annotation (excluding person detections)
   currentFrameAnnotations.forEach((annotation) => {
     const box = annotation.boundingBox;
     if (!box || typeof box.x !== 'number' || typeof box.y !== 'number') return;
@@ -423,15 +418,78 @@ const setupAnnotationListener = () => {
           frameHeight.value = data.frameHeight;
         }
         
-        // Filter predictions: hard hat/helmet must be >= 80% confidence
+        const now = Date.now();
+        
+        // RESET all PPE items FIRST (before processing any predictions)
+        ppeStatus.value.hardhat = { present: false, confidence: 0, lastSeen: null };
+        ppeStatus.value.helmet = { present: false, confidence: 0, lastSeen: null };
+        ppeStatus.value.head = { present: false, confidence: 0, lastSeen: null };
+        ppeStatus.value.gloves = { present: false, confidence: 0, lastSeen: null };
+        ppeStatus.value.hand = { present: false, confidence: 0, lastSeen: null };
+        ppeStatus.value.vest = { present: false, confidence: 0, lastSeen: null };
+        ppeStatus.value.safety_vest = { present: false, confidence: 0, lastSeen: null };
+        ppeStatus.value.person = { present: false, confidence: 0, lastSeen: null };
+        
+        // Process ALL predictions first to update PPE status (including person)
+        data.predictions.forEach(p => {
+          const normalizedType = p.type.toLowerCase().replace(/[_-]/g, '');
+          
+          // Update person status from ALL predictions
+          if (normalizedType.includes('person')) {
+            ppeStatus.value.person = {
+              present: true,
+              confidence: p.confidence,
+              lastSeen: now
+            };
+          }
+          
+          // For other PPE items, only update if above 80% confidence
+          const HARDHAT_MIN_CONFIDENCE = 0.8;
+          if (p.confidence >= HARDHAT_MIN_CONFIDENCE) {
+            if (normalizedType.includes('hardhat') || normalizedType.includes('helmet') || normalizedType.includes('head')) {
+              const key = normalizedType.includes('hardhat') ? 'hardhat' : 
+                         normalizedType.includes('helmet') ? 'helmet' : 'head';
+              ppeStatus.value[key] = {
+                present: true,
+                confidence: p.confidence,
+                lastSeen: now
+              };
+            }
+            
+            if (normalizedType.includes('glove') || normalizedType.includes('hand')) {
+              const key = normalizedType.includes('glove') ? 'gloves' : 'hand';
+              ppeStatus.value[key] = {
+                present: true,
+                confidence: p.confidence,
+                lastSeen: now
+              };
+            }
+            
+            if (normalizedType.includes('vest') || normalizedType.includes('jacket')) {
+              const key = normalizedType.includes('safety') ? 'safety_vest' : 'vest';
+              ppeStatus.value[key] = {
+                present: true,
+                confidence: p.confidence,
+                lastSeen: now
+              };
+            }
+          }
+        });
+        
+        // Filter predictions for CANVAS display (exclude person and low-confidence hardhat)
         const HARDHAT_MIN_CONFIDENCE = 0.8;
         const filteredPredictions = data.predictions.filter(p => {
           const normalizedType = p.type.toLowerCase().replace(/[_-]/g, '');
           
-          // Apply 80% confidence filter only to hard hat/helmet detections
+          // Exclude person detections from canvas visualization
+          if (normalizedType.includes('person')) {
+            return false;
+          }
+          
+          // Apply 80% confidence filter only to hard hat/helmet detections for display
           if (normalizedType.includes('hardhat') || normalizedType.includes('helmet') || normalizedType.includes('head')) {
             if (p.confidence < HARDHAT_MIN_CONFIDENCE) {
-              console.log(`[Filtered] ${p.type}: ${(p.confidence * 100).toFixed(1)}% < 80%`);
+              console.log(`[Filtered from display] ${p.type}: ${(p.confidence * 100).toFixed(1)}% < 80%`);
               return false;
             }
           }
@@ -447,69 +505,18 @@ const setupAnnotationListener = () => {
           boundingBox: p.boundingBox
         }));
         
-        // Update PPE status with filtered predictions
-        const now = Date.now();
-        
-        // Check if we have any hard hat/helmet in filtered predictions
-        const hasHardhat = filteredPredictions.some(p => {
-          const norm = p.type.toLowerCase().replace(/[_-]/g, '');
-          return norm.includes('hardhat') || norm.includes('helmet') || norm.includes('head');
-        });
-        
-        // If no hard hat in this frame, clear it immediately
-        if (!hasHardhat) {
-          ppeStatus.value.hardhat = { present: false, confidence: 0, lastSeen: null };
-          ppeStatus.value.helmet = { present: false, confidence: 0, lastSeen: null };
-          ppeStatus.value.head = { present: false, confidence: 0, lastSeen: null };
-        }
-        
-        filteredPredictions.forEach(p => {
-          const normalizedType = p.type.toLowerCase().replace(/[_-]/g, '');
-          
-          // Map to PPE status keys
-          if (normalizedType.includes('hardhat') || normalizedType.includes('helmet') || normalizedType.includes('head')) {
-            const key = normalizedType.includes('hardhat') ? 'hardhat' : 
-                       normalizedType.includes('helmet') ? 'helmet' : 'head';
-            ppeStatus.value[key] = {
-              present: true,
-              confidence: p.confidence,
-              lastSeen: now
-            };
-          }
-          
-          if (normalizedType.includes('glove') || normalizedType.includes('hand')) {
-            const key = normalizedType.includes('glove') ? 'gloves' : 'hand';
-            ppeStatus.value[key] = {
-              present: true,
-              confidence: p.confidence,
-              lastSeen: now
-            };
-          }
-          
-          if (normalizedType.includes('vest') || normalizedType.includes('jacket')) {
-            const key = normalizedType.includes('safety') ? 'safety_vest' : 'vest';
-            ppeStatus.value[key] = {
-              present: true,
-              confidence: p.confidence,
-              lastSeen: now
-            };
-          }
-          
-          if (normalizedType.includes('person')) {
-            ppeStatus.value.person = {
-              present: true,
-              confidence: p.confidence,
-              lastSeen: now
-            };
-          }
-        });
-        
         detectionCount.value += filteredPredictions.length;
         lastDetectionTime.value = now;
         return;
       }
       
       if (data.eventType === "PPE_DETECTION_WEBCAM") {
+        // Skip individual events when using batch events
+        // Batch events (PPE_DETECTION_BATCH_WEBCAM) are the source of truth
+        return;
+        
+        // NOTE: Below code is kept for reference but not used
+        /*
         if (data.frameWidth && data.frameHeight) {
           frameWidth.value = data.frameWidth;
           frameHeight.value = data.frameHeight;
@@ -518,6 +525,17 @@ const setupAnnotationListener = () => {
         // Check if this is a hard hat/helmet detection below 80% confidence - skip it
         const HARDHAT_MIN_CONFIDENCE = 0.8;
         const normalizedTypeCheck = data.type.toLowerCase().replace(/[_-]/g, '');
+        
+        // Exclude person detections from visualization
+        if (normalizedTypeCheck.includes('person')) {
+          // Still update PPE status for person, but don't display it
+          ppeStatus.value.person = {
+            present: true,
+            confidence: data.confidence || 0,
+            lastSeen: Date.now()
+          };
+          return;
+        }
         
         if ((normalizedTypeCheck.includes('hardhat') || normalizedTypeCheck.includes('helmet') || normalizedTypeCheck.includes('head')) &&
             data.confidence < HARDHAT_MIN_CONFIDENCE) {
@@ -587,6 +605,7 @@ const setupAnnotationListener = () => {
         if (displayedAnnotations.value.length > 50) {
           displayedAnnotations.value = displayedAnnotations.value.slice(-50);
         }
+        */
       }
     } catch (error) {
       console.error("❌ Error processing detection:", error);
@@ -667,7 +686,7 @@ const setupAnnotationListener = () => {
           <div class="stream-container">
             <img 
               ref="imageElement"
-              :src="`http://localhost:3001/webcam?t=${imageRefreshCounter}`"
+              src="http://localhost:3001/webcam"
               alt="Live Webcam Stream"
               class="stream-image"
               @load="drawAnnotations"
