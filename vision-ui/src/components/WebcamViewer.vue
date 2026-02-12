@@ -10,6 +10,7 @@ const isProcessing = ref(false);
 const processingError = ref("");
 const detectionCount = ref(0);
 const lastDetectionTime = ref(null);
+const imageRefreshCounter = ref(0);
 
 // Frame dimensions
 const frameWidth = ref(640);
@@ -75,6 +76,11 @@ onMounted(() => {
   
   // Update PPE status every 500ms
   setInterval(updatePPEStatus, 500);
+  
+  // Force image refresh every 100ms to bypass cache
+  setInterval(() => {
+    imageRefreshCounter.value++;
+  }, 100);
 });
 
 onUnmounted(() => {
@@ -443,6 +449,20 @@ const setupAnnotationListener = () => {
         
         // Update PPE status with filtered predictions
         const now = Date.now();
+        
+        // Check if we have any hard hat/helmet in filtered predictions
+        const hasHardhat = filteredPredictions.some(p => {
+          const norm = p.type.toLowerCase().replace(/[_-]/g, '');
+          return norm.includes('hardhat') || norm.includes('helmet') || norm.includes('head');
+        });
+        
+        // If no hard hat in this frame, clear it immediately
+        if (!hasHardhat) {
+          ppeStatus.value.hardhat = { present: false, confidence: 0, lastSeen: null };
+          ppeStatus.value.helmet = { present: false, confidence: 0, lastSeen: null };
+          ppeStatus.value.head = { present: false, confidence: 0, lastSeen: null };
+        }
+        
         filteredPredictions.forEach(p => {
           const normalizedType = p.type.toLowerCase().replace(/[_-]/g, '');
           
@@ -647,7 +667,7 @@ const setupAnnotationListener = () => {
           <div class="stream-container">
             <img 
               ref="imageElement"
-              src="http://localhost:3001/webcam"
+              :src="`http://localhost:3001/webcam?t=${imageRefreshCounter}`"
               alt="Live Webcam Stream"
               class="stream-image"
               @load="drawAnnotations"
