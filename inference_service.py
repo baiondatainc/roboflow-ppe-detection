@@ -18,13 +18,9 @@ from pathlib import Path
 try:
     print("[INFO] Loading local models...", file=sys.stderr)
     
-    # Person detection model (YOLOv8l)
-    person_model = YOLO("models/yolov8l.pt")
-    print("[✓] YOLOv8l loaded", file=sys.stderr)
-    
-    # Hard hat detection model
-    hardhat_model = YOLO("models/hardhat-best.pt")
-    print("[✓] Hardhat-best.pt loaded", file=sys.stderr)
+    # Combined detection model (person + PPE)
+    model = YOLO("models/best.pt")
+    print("[✓] best.pt loaded", file=sys.stderr)
     
     print("[✓] Models ready for inference", file=sys.stderr)
     sys.stderr.flush()
@@ -50,39 +46,10 @@ def decode_image(image_data):
         print(f"[ERROR] Image decode failed: {e}", file=sys.stderr)
         raise
 
-def detect_persons(frame, conf_threshold=0.5):
-    """Detect persons using YOLOv8l"""
+def detect_objects(frame, conf_threshold=0.5):
+    """Detect all objects using best.pt"""
     try:
-        # Use minimum 0.5 confidence to avoid false positives
-        min_conf = max(0.5, conf_threshold)
-        results = person_model(frame, conf=min_conf, verbose=False)
-        detections = []
-        
-        for result in results:
-            for box in result.boxes:
-                if result.names[int(box.cls)] == 'person':
-                    x, y, w, h = box.xywh[0].tolist()
-                    confidence = float(box.conf)
-                    detections.append({
-                        'class': 'person',
-                        'x': x,
-                        'y': y,
-                        'width': w,
-                        'height': h,
-                        'confidence': confidence
-                    })
-        
-        return detections
-    except Exception as e:
-        print(f"[ERROR] Person detection failed: {e}", file=sys.stderr)
-        return []
-
-def detect_hathats(frame, conf_threshold=0.5):
-    """Detect hard hats using hardhat-best.pt"""
-    try:
-        # Use minimum 0.6 confidence for hard hats (stricter than person detection)
-        min_conf = max(0.6, conf_threshold)
-        results = hardhat_model(frame, conf=min_conf, verbose=False)
+        results = model(frame, conf=conf_threshold, verbose=False)
         detections = []
         
         for result in results:
@@ -92,7 +59,7 @@ def detect_hathats(frame, conf_threshold=0.5):
                 confidence = float(box.conf)
                 
                 detections.append({
-                    'class': class_name,  # Could be 'hardhat', 'helmet', etc.
+                    'class': class_name,
                     'x': x,
                     'y': y,
                     'width': w,
@@ -102,31 +69,25 @@ def detect_hathats(frame, conf_threshold=0.5):
         
         return detections
     except Exception as e:
-        print(f"[ERROR] Hard hat detection failed: {e}", file=sys.stderr)
+        print(f"[ERROR] Detection failed: {e}", file=sys.stderr)
         return []
-
 def process_frame(frame_data, conf_threshold=0.5):
-    """Process frame with both models and return combined results"""
+    """Process frame with best.pt model and return detections"""
     try:
         # Decode image
         frame = decode_image(frame_data)
         h, w = frame.shape[:2]
         
-        # Run detections
-        person_detections = detect_persons(frame, conf_threshold)
-        hardhat_detections = detect_hathats(frame, conf_threshold)
+        # Run detections with single model
+        detections = detect_objects(frame, conf_threshold)
         
-        # Combine results
-        all_detections = person_detections + hardhat_detections
-        
-        return {
+        return {    
             'success': True,
             'frame_width': w,
             'frame_height': h,
-            'detections': all_detections,
-            'person_count': len(person_detections),
-            'hardhat_count': len(hardhat_detections)
-        }
+            'detections': detections,
+            'detection_count': len(detections)
+        }   
     except Exception as e:
         print(f"[ERROR] Frame processing failed: {e}", file=sys.stderr)
         return {
