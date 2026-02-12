@@ -22,16 +22,17 @@ help:
 	@echo ""
 	@echo "$(BLUE)Available targets:$(NC)"
 	@echo ""
-	@echo "  $(GREEN)make backend$(NC)       - Start backend server (port 3001)"
-	@echo "  $(GREEN)make frontend$(NC)      - Start frontend UI (port 5173+)"
-	@echo "  $(GREEN)make all$(NC)           - Start backend + frontend"
-	@echo "  $(GREEN)make webcam$(NC)        - Start backend for webcam PPE detection"
-	@echo "  $(GREEN)make reset-camera$(NC)  - Reset camera (fixes device locks)"
-	@echo "  $(GREEN)make kill$(NC)          - Kill all running processes"
-	@echo "  $(GREEN)make install$(NC)       - Install all dependencies"
-	@echo "  $(GREEN)make info$(NC)          - Show system info"
-	@echo "  $(GREEN)make process-info$(NC)  - Show processing pipeline info"
-	@echo "  $(GREEN)make clean$(NC)         - Clean node_modules and logs"
+	@echo "  $(GREEN)make be$(NC)                 - Start backend ✅ PRODUCTION (RECOMMENDED)"
+	@echo "  $(GREEN)make be-refactored$(NC)      - Start refactored backend 🔧 WIP (development)"
+	@echo "  $(GREEN)make fe$(NC)                 - Start frontend UI (Vue 3)"
+	@echo "  $(GREEN)make all$(NC)                - Start backend + frontend"
+	@echo "  $(GREEN)make webcam$(NC)             - Start backend (webcam mode)"
+	@echo "  $(GREEN)make reset-camera$(NC)       - Reset camera device"
+	@echo "  $(GREEN)make kill$(NC)               - Kill all running processes"
+	@echo "  $(GREEN)make install$(NC)            - Install all dependencies"
+	@echo "  $(GREEN)make info$(NC)               - Show system info"
+	@echo "  $(GREEN)make process-info$(NC)       - Show detection pipeline"
+	@echo "  $(GREEN)make clean$(NC)              - Clean node_modules and logs"
 	@echo ""
 
 # ============================================================
@@ -55,28 +56,56 @@ install-frontend:
 # ============================================================
 # Backend
 # ============================================================
-backend: install-backend
+be: install-backend
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@echo "$(BLUE)Starting Backend (Roboflow + FFmpeg)...$(NC)"
+	@echo "$(BLUE)Starting Backend (Roboflow + Local YOLOv8l + FFmpeg)...$(NC)"
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
 	@echo ""
 	@echo "$(GREEN)🚀 Backend running on port $(BACKEND_PORT)$(NC)"
 	@echo "   🎬 Video stream : http://localhost:$(BACKEND_PORT)/video"
+	@echo "   📷 Webcam stream: http://localhost:$(BACKEND_PORT)/webcam"
 	@echo "   ❤️  Health       : http://localhost:$(BACKEND_PORT)/health"
 	@echo "   🔌 WebSocket    : ws://localhost:$(BACKEND_PORT)"
 	@echo "   📊 Stats        : http://localhost:$(BACKEND_PORT)/stats"
 	@echo ""
 	@echo "$(YELLOW)Processing Endpoints:$(NC)"
-	@echo "   POST /api/start-processing"
-	@echo "   POST /api/stop-processing"
+	@echo "   POST /api/start-processing        (video file)"
+	@echo "   POST /api/stop-processing         (video file)"
+	@echo "   POST /api/start-webcam-processing (live webcam)"
+	@echo "   POST /api/stop-webcam-processing  (live webcam)"
 	@echo "   GET  /api/status"
 	@echo ""
 	@node server.js
 
 # ============================================================
+# Backend (Refactored - EXPERIMENTAL/WIP)
+# ============================================================
+be-refactored: install-backend
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(YELLOW)⚠️  EXPERIMENTAL: Backend (Refactored SOLID Architecture)$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo ""
+	@echo "$(RED)❌ NOT YET WORKING - Use 'make be' for production$(NC)"
+	@echo ""
+	@echo "Status:"
+	@echo "  ✅ Architecture: SOLID principles, modular services"
+	@echo "  ✅ Services: All 7 classes created and tested"
+	@echo "  ✅ API: All endpoints functional"
+	@echo "  ✅ WebSocket: Broadcasting working"
+	@echo "  ❌ Issue: Frame detection not working (JPEG → detection pipeline)"
+	@echo "  ❌ Issue: Need to decode JPEG before sending to inference"
+	@echo ""
+	@echo "To fix:"
+	@echo "  - Add JPEG decoding in frame processor"
+	@echo "  - Or convert MJPEG to raw frames before detection"
+	@echo "  - See: lib/WebcamProcessor.js + server-refactored.js"
+	@echo ""
+	@node server-refactored.js
+
+# ============================================================
 # Frontend
 # ============================================================
-frontend: install-frontend
+fe: install-frontend
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
 	@echo "$(BLUE)Starting Frontend (Vue 3 + Vite)...$(NC)"
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
