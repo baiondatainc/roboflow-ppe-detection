@@ -1,0 +1,6 @@
+{
+    "watch": true,
+    "single": false,    
+    "live": true,
+    "port": 8089
+}

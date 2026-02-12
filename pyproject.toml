@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ppe-detection-testing"
+version = "1.0.0"
+description = "PPE Detection Model Testing & Validation Suite"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+dependencies = [
+    "opencv-python>=4.8.0",
+    "requests>=2.31.0",
+    "numpy>=1.24.0,<2.0; python_version<'3.11'",
+    "numpy>=2.0.0; python_version>='3.11'",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black>=23.0",
+    "flake8>=6.0",
+]
+
+[project.scripts]
+ppe-test = "test_model:main"
+ppe-quick-test = "quick_test:main"
+ppe-diagnose = "diagnose:main"
+ppe-validate = "validate_model:main"
+ppe-person-test = "test_person_detection:main"
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100

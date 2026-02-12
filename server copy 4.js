@@ -8,8 +8,6 @@ import axios from "axios";
 import dotenv from "dotenv";
 import { spawn } from "child_process";
 import FormData from "form-data";
-import { createReadStream, writeFileSync } from "fs";
-import { spawn as spawnPython } from "child_process";
 
 dotenv.config();
 
@@ -54,98 +52,22 @@ let webcamClients = new Set();
 let frameWidth = 640;
 let frameHeight = 480;
 
-// Python inference service
-let pythonInferenceProcess = null;
-const inferenceQueue = [];
-let inferenceReady = false;
-
 /* ---------------- SERVER ---------------- */
 
 const server = app.listen(PORT, "127.0.0.1", () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║   🛡️  HYBRID PPE DETECTION (Roboflow + Local Models)        ║
+║      🛡️  ROBOFLOW PPE DETECTION BACKEND (IMPROVED)           ║
 ╚══════════════════════════════════════════════════════════════╝
 🚀 http://127.0.0.1:${PORT}
 📹 Video: ${VIDEO_FILE}
-🎯 Roboflow: ${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION} (Vest & Gloves)
-🤖 Local: YOLOv8l + hardhat-best.pt (Person & Hat)
+🎯 Model: ${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}
 ⚡ Confidence: ${CONFIDENCE} | Overlap: ${OVERLAP}
 🔄 Frame Sample Rate: 1/${FRAME_SAMPLE_RATE}
 `);
-
-  // Initialize Python inference service
-  initializePythonInference();
 });
 
-/* --------------- PYTHON INFERENCE SERVICE SETUP --------------- */
-
-function initializePythonInference() {
-  console.log("\n🐍 Starting Python inference service...");
-  
-  try {
-    pythonInferenceProcess = spawn("python3", ["inference_service.py"], {
-      cwd: __dirname,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    
-    pythonInferenceProcess.on("error", (error) => {
-      console.error("❌ Python process error:", error.message);
-      inferenceReady = false;
-    });
-    
-    pythonInferenceProcess.stderr.on("data", (data) => {
-      const message = data.toString().trim();
-      if (message.includes("✓") || message.includes("INFO")) {
-        console.log(`🐍 ${message}`);
-        if (message.includes("Ready")) {
-          inferenceReady = true;
-        }
-      } else if (message.includes("ERROR")) {
-        console.error(`🐍 ${message}`);
-      }
-    });
-    
-    pythonInferenceProcess.on("close", (code) => {
-      console.log(`🐍 Python process closed with code ${code}`);
-      inferenceReady = false;
-      
-      // Restart if not intentional shutdown
-      if (isProcessingWebcam) {
-        setTimeout(() => {
-          console.log("🔄 Restarting Python inference service...");
-          initializePythonInference();
-        }, 2000);
-      }
-    });
-    
-  } catch (error) {
-    console.error("❌ Failed to start Python inference service:", error.message);
-    inferenceReady = false;
-  }
-}
-
-function sendToInference(frameBuffer, callback) {
-  if (!pythonInferenceProcess || !pythonInferenceProcess.stdin.writable) {
-    callback({ success: false, error: "Inference service not ready" });
-    return;
-  }
-  
-  const base64Image = frameBuffer.toString("base64");
-  const request = {
-    image: base64Image,
-    confidence: CONFIDENCE
-  };
-  
-  try {
-    pythonInferenceProcess.stdin.write(JSON.stringify(request) + "\n");
-  } catch (error) {
-    console.error("❌ Failed to send to inference:", error.message);
-    callback({ success: false, error: error.message });
-  }
-}
-
-/* --------------- WEBSOCKETS --------------- */
+/* ---------------- WEBSOCKETS ---------------- */
 
 const wss = new WebSocketServer({ server });
 const clients = new Set();
@@ -630,61 +552,56 @@ async function processNextFrame() {
 
 async function processWebcamFrame(imageBuffer, frameNumber) {
   try {
-    // Run both models in parallel
-    const [roboflowResults, localResults] = await Promise.allSettled([
-      getRoboflowDetections(imageBuffer),
-      getLocalDetections(imageBuffer)
-    ]).then(results => [
-      results[0].value || { predictions: [] },
-      results[1].value || { detections: [] }
-    ]);
+    const form = new FormData();
+    form.append("file", imageBuffer, {
+      filename: "webcam-frame.jpg",
+      contentType: "image/jpeg"
+    });
 
-    // Extract predictions from both sources
-    const roboflowPredictions = roboflowResults.predictions || [];
-    const localPredictions = localResults.detections || [];
+    const url = `http://localhost:9001/${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`;
     
-    // Filter Roboflow results to only vest and gloves
-    const filteredRoboflow = roboflowPredictions.filter(p => {
-      const cls = p.class.toLowerCase();
-      return cls.includes('vest') || cls.includes('glove') || cls.includes('jacket');
-    });
+    const response = await axios.post(
+      url,
+      form,
+      {
+        params: {
+          api_key: ROBOFLOW_API_KEY,
+          confidence: CONFIDENCE,
+          overlap: OVERLAP,
+          // IMPROVED: Request image dimensions from Roboflow
+          image_info: true
+        },
+        headers: {
+          ...form.getHeaders()
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+        timeout: 10000  // Reduced timeout for faster response
+      }
+    );
+
+    const predictions = response.data.predictions || [];
     
-    // Filter local results to only person and hardhat
-    const filteredLocal = localPredictions.filter(p => {
-      const cls = p.class.toLowerCase();
-      return cls.includes('person') || cls.includes('hardhat') || cls.includes('helmet') || cls.includes('head');
-    });
-    
-    // Combine all predictions
-    const allPredictions = [
-      ...filteredRoboflow,
-      ...filteredLocal
-    ];
-    
-    // Update frame dimensions
-    if (roboflowResults.image) {
-      frameWidth = roboflowResults.image.width || 640;
-      frameHeight = roboflowResults.image.height || 480;
-    } else if (localResults.frame_width && localResults.frame_height) {
-      frameWidth = localResults.frame_width;
-      frameHeight = localResults.frame_height;
+    // IMPROVED: Track frame dimensions from Roboflow response
+    if (response.data.image) {
+      frameWidth = response.data.image.width || 640;
+      frameHeight = response.data.image.height || 480;
     }
     
-    console.log(`✅ Frame #${frameNumber}: ${allPredictions.length} detections (Roboflow: ${filteredRoboflow.length}, Local: ${filteredLocal.length})`);
+    console.log(`✅ Frame #${frameNumber}: ${predictions.length} detections (${frameWidth}x${frameHeight})`);
 
-    // Send batch results
-    if (allPredictions.length > 0) {
+    // IMPROVED: Send all predictions in a single message with frame dimensions
+    if (predictions.length > 0) {
       broadcast({
         eventType: "PPE_DETECTION_BATCH_WEBCAM",
-        source: "hybrid",
+        source: "webcam",
         frame: frameNumber,
         frameWidth: frameWidth,
         frameHeight: frameHeight,
-        count: allPredictions.length,
-        predictions: allPredictions.map(p => ({
+        count: predictions.length,
+        predictions: predictions.map(p => ({
           type: p.class,
           confidence: p.confidence,
-          source: p.source || "unknown",
           boundingBox: {
             x: p.x,
             y: p.y,
@@ -696,16 +613,15 @@ async function processWebcamFrame(imageBuffer, frameNumber) {
       });
       
       // Also send individual events for compatibility
-      allPredictions.forEach((p, i) => {
+      predictions.forEach((p, i) => {
         broadcast({
           eventType: "PPE_DETECTION_WEBCAM",
-          source: "hybrid",
+          source: "webcam",
           frame: frameNumber,
           frameWidth: frameWidth,
           frameHeight: frameHeight,
           type: p.class,
           confidence: p.confidence,
-          detectionSource: p.source || "unknown",
           boundingBox: {
             x: p.x,
             y: p.y,
@@ -719,113 +635,11 @@ async function processWebcamFrame(imageBuffer, frameNumber) {
 
   } catch (e) {
     console.error(`❌ Frame #${frameNumber} Error:`, {
+      status: e.response?.status,
+      statusText: e.response?.statusText,
       message: e.message
     });
   }
-}
-
-/* --------------- ROBOFLOW API CALL --------------- */
-
-async function getRoboflowDetections(imageBuffer) {
-  try {
-    const form = new FormData();
-    form.append("file", imageBuffer, {
-      filename: "webcam-frame.jpg",
-      contentType: "image/jpeg"
-    });
-
-    const url = `https://detect.roboflow.com/${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`;
-    
-    const response = await axios.post(
-      url,
-      form,
-      {
-        params: {
-          api_key: ROBOFLOW_API_KEY,
-          confidence: CONFIDENCE,
-          overlap: OVERLAP,
-          image_info: true
-        },
-        headers: {
-          ...form.getHeaders()
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-        timeout: 10000
-      }
-    );
-
-    return {
-      predictions: (response.data.predictions || []).map(p => ({
-        ...p,
-        source: "roboflow"
-      })),
-      image: response.data.image
-    };
-  } catch (e) {
-    console.error(`❌ Roboflow API Error:`, e.message);
-    return { predictions: [], image: null };
-  }
-}
-
-/* --------------- LOCAL MODEL API CALL --------------- */
-
-async function getLocalDetections(imageBuffer) {
-  return new Promise((resolve, reject) => {
-    if (!pythonInferenceProcess || !pythonInferenceProcess.stdout) {
-      resolve({ detections: [], frame_width: 640, frame_height: 480 });
-      return;
-    }
-    
-    const base64Image = imageBuffer.toString("base64");
-    const request = {
-      image: base64Image,
-      confidence: CONFIDENCE
-    };
-    
-    // Set up one-time listener for response
-    const responseHandler = (data) => {
-      try {
-        const result = JSON.parse(data.toString());
-        
-        if (result.success) {
-          pythonInferenceProcess.stdout.removeListener("data", responseHandler);
-          resolve({
-            detections: (result.detections || []).map(d => ({
-              class: d.class,
-              x: d.x,
-              y: d.y,
-              width: d.width,
-              height: d.height,
-              confidence: d.confidence,
-              source: "local"
-            })),
-            frame_width: result.frame_width,
-            frame_height: result.frame_height
-          });
-        } else {
-          console.error("❌ Local inference error:", result.error);
-        }
-      } catch (error) {
-        console.error("❌ Failed to parse local inference response:", error.message);
-      }
-    };
-    
-    pythonInferenceProcess.stdout.once("data", responseHandler);
-    
-    try {
-      pythonInferenceProcess.stdin.write(JSON.stringify(request) + "\n");
-      
-      // Timeout after 10 seconds
-      setTimeout(() => {
-        pythonInferenceProcess.stdout.removeListener("data", responseHandler);
-        resolve({ detections: [], frame_width: 640, frame_height: 480 });
-      }, 10000);
-    } catch (error) {
-      console.error("❌ Failed to send to local inference:", error.message);
-      resolve({ detections: [], frame_width: 640, frame_height: 480 });
-    }
-  });
 }
 
 /* --------------- ROBOFLOW INFERENCE --------------- */
@@ -905,7 +719,6 @@ function shutdown() {
   isProcessingWebcam = false;
   ffmpegProcess?.kill("SIGTERM");
   webcamProcess?.kill("SIGTERM");
-  pythonInferenceProcess?.kill("SIGTERM");
   processingQueue = [];
   server.close(() => {
     console.log("✅ Server closed");

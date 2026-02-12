@@ -146,7 +146,7 @@ const drawAnnotations = () => {
   
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   
-  // Enhanced color mapping
+  // Enhanced color mapping with source differentiation
   const colorMap = {
     head: "#FF3B30",
     helmet: "#FF9500",
@@ -410,7 +410,7 @@ const setupAnnotationListener = () => {
       }
       
       if (data.eventType === "PPE_DETECTION_BATCH_WEBCAM") {
-        console.log(`📦 Batch: ${data.count} detections in frame #${data.frame}`);
+        console.log(`📦 Batch: ${data.count} detections in frame #${data.frame} (Source: ${data.source})`);
         
         if (data.frameWidth && data.frameHeight) {
           frameWidth.value = data.frameWidth;
@@ -422,6 +422,7 @@ const setupAnnotationListener = () => {
           frame: data.frame,
           confidence: p.confidence,
           timestamp: data.timestamp,
+          source: p.source,
           boundingBox: p.boundingBox
         }));
         
@@ -484,6 +485,7 @@ const setupAnnotationListener = () => {
           frame: data.frame,
           confidence: data.confidence || 0,
           timestamp: data.timestamp || new Date().toISOString(),
+          source: data.detectionSource,
           boundingBox: data.boundingBox
         };
         
