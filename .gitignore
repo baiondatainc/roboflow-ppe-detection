@@ -42,3 +42,4 @@ __screenshots__/
 /models/
 /models
 /output/
+*.log

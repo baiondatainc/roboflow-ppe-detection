@@ -4,10 +4,8 @@ import cors from "cors";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import axios from "axios";
 import dotenv from "dotenv";
 import { spawn } from "child_process";
-import FormData from "form-data";
 
 dotenv.config();
 
@@ -23,12 +21,9 @@ app.use(express.json());
 const PORT = process.env.PORT || 3001;
 const VIDEO_FILE = process.env.VIDEO_FILE || "./ppe-upload-video-new1.mp4";
 
-const ROBOFLOW_API_KEY = process.env.ROBOFLOW_API_KEY;
-const ROBOFLOW_MODEL = process.env.ROBOFLOW_MODEL;
-const ROBOFLOW_VERSION = process.env.ROBOFLOW_VERSION;
+// Roboflow removed - using local models only
 
-const CONFIDENCE = parseFloat(process.env.ROBOFLOW_CONFIDENCE || "0.55");
-const OVERLAP = parseFloat(process.env.ROBOFLOW_OVERLAP || "0.3");
+const CONFIDENCE = parseFloat(process.env.CONFIDENCE || "0.55");
 const FRAME_SAMPLE_RATE = parseInt(process.env.FRAME_SAMPLE_RATE || "2");
 const MAX_QUEUE_SIZE = parseInt(process.env.MAX_QUEUE_SIZE || "3");
 const CAMERA_TIMEOUT_MS = parseInt(process.env.CAMERA_TIMEOUT_MS || "60000");
@@ -59,13 +54,12 @@ let cameraHealthInterval = null;
 const server = app.listen(PORT, "127.0.0.1", () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║   🛡️  PPE DETECTION SYSTEM v2.0 (FIXED FFMPEG)              ║
+║   🛡️  PPE DETECTION SYSTEM v2.0 (LOCAL MODELS ONLY)         ║
 ╚══════════════════════════════════════════════════════════════╝
 🚀 http://127.0.0.1:${PORT}
 📹 Video: ${VIDEO_FILE}
-🎯 Roboflow: ${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}
 🤖 Local: YOLOv8l + hardhat-best.pt
-⚡ Confidence: ${CONFIDENCE} | Overlap: ${OVERLAP}
+⚡ Confidence: ${CONFIDENCE}
 🔄 Frame Sample Rate: 1/${FRAME_SAMPLE_RATE}
 `);
 
@@ -347,7 +341,7 @@ function startWebcamProcessing() {
   lastFrameTime = Date.now();
 
   console.log("\n🎥 Starting webcam PPE detection...");
-  console.log(`⚙️  Settings: Confidence=${CONFIDENCE}, Overlap=${OVERLAP}, SampleRate=1/${FRAME_SAMPLE_RATE}`);
+  console.log(`⚙️  Settings: Confidence=${CONFIDENCE}, SampleRate=1/${FRAME_SAMPLE_RATE}`);
 
   startCameraHealthMonitoring();
 
@@ -547,54 +541,34 @@ async function processNextFrame() {
 
 async function processWebcamFrame(imageBuffer, frameNumber) {
   try {
-    const [roboflowResults, localResults] = await Promise.allSettled([
-      getRoboflowDetections(imageBuffer),
-      getLocalDetections(imageBuffer)
-    ]).then(results => [
-      results[0].status === 'fulfilled' ? results[0].value : { predictions: [] },
-      results[1].status === 'fulfilled' ? results[1].value : { detections: [] }
-    ]);
+    const localResults = await getLocalDetections(imageBuffer);
 
-    const roboflowPredictions = roboflowResults.predictions || [];
     const localPredictions = localResults.detections || [];
-    
-    const filteredRoboflow = roboflowPredictions.filter(p => {
-      const cls = p.class.toLowerCase();
-      return cls.includes('vest') || cls.includes('glove') || cls.includes('jacket');
-    });
     
     const filteredLocal = localPredictions.filter(p => {
       const cls = p.class.toLowerCase();
-      return cls.includes('person') || cls.includes('hardhat') || cls.includes('helmet');
+      return cls.includes('person') || cls.includes('hardhat') || cls.includes('helmet') || cls.includes('vest') || cls.includes('glove');
     });
     
-    const allPredictions = [
-      ...filteredRoboflow,
-      ...filteredLocal
-    ];
-    
-    if (roboflowResults.image) {
-      frameWidth = roboflowResults.image.width || 640;
-      frameHeight = roboflowResults.image.height || 480;
-    } else if (localResults.frame_width && localResults.frame_height) {
+    if (localResults.frame_width && localResults.frame_height) {
       frameWidth = localResults.frame_width;
       frameHeight = localResults.frame_height;
     }
     
-    console.log(`✅ Frame #${frameNumber}: ${allPredictions.length} detections (RF: ${filteredRoboflow.length}, Local: ${filteredLocal.length})`);
+    console.log(`✅ Frame #${frameNumber}: ${filteredLocal.length} detections (Local Model)`);
 
-    if (allPredictions.length > 0) {
+    if (filteredLocal.length > 0) {
       broadcast({
         eventType: "PPE_DETECTION_BATCH_WEBCAM",
-        source: "hybrid",
+        source: "local",
         frame: frameNumber,
         frameWidth: frameWidth,
         frameHeight: frameHeight,
-        count: allPredictions.length,
-        predictions: allPredictions.map(p => ({
+        count: filteredLocal.length,
+        predictions: filteredLocal.map(p => ({
           type: p.class,
           confidence: p.confidence,
-          source: p.source || "unknown",
+          source: "local",
           boundingBox: {
             x: p.x,
             y: p.y,
@@ -614,39 +588,8 @@ async function processWebcamFrame(imageBuffer, frameNumber) {
 /* --------------- API CALLS --------------- */
 
 async function getRoboflowDetections(imageBuffer) {
-  try {
-    const form = new FormData();
-    form.append("file", imageBuffer, {
-      filename: "webcam-frame.jpg",
-      contentType: "image/jpeg"
-    });
-
-    const url = `https://detect.roboflow.com/${ROBOFLOW_MODEL}/${ROBOFLOW_VERSION}`;
-    
-    const response = await axios.post(url, form, {
-      params: {
-        api_key: ROBOFLOW_API_KEY,
-        confidence: CONFIDENCE,
-        overlap: OVERLAP,
-        image_info: true
-      },
-      headers: form.getHeaders(),
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity,
-      timeout: 10000
-    });
-
-    return {
-      predictions: (response.data.predictions || []).map(p => ({
-        ...p,
-        source: "roboflow"
-      })),
-      image: response.data.image
-    };
-  } catch (e) {
-    console.error(`❌ Roboflow API Error:`, e.message);
-    return { predictions: [], image: null };
-  }
+  // Roboflow removed - use getLocalDetections instead
+  return { predictions: [], image: null };
 }
 
 async function getLocalDetections(imageBuffer) {

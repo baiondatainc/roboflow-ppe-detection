@@ -17,7 +17,7 @@ FRONTEND_PORT := 5173
 # ============================================================
 help:
 	@echo "$(BLUE)╔════════════════════════════════════════════════════════════╗$(NC)"
-	@echo "$(BLUE)║   PPE Detection System - Roboflow Video Streamer          ║$(NC)"
+	@echo "$(BLUE)║   PPE Detection System - Local Models (YOLOv8l)           ║$(NC)"
 	@echo "$(BLUE)╚════════════════════════════════════════════════════════════╝$(NC)"
 	@echo ""
 	@echo "$(BLUE)Available targets:$(NC)"
@@ -58,7 +58,7 @@ install-frontend:
 # ============================================================
 be: install-backend
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@echo "$(BLUE)Starting Backend (Roboflow + Local YOLOv8l + FFmpeg)...$(NC)"
+	@echo "$(BLUE)Starting Backend (Local YOLOv8l + hardhat-best.pt + FFmpeg)...$(NC)"
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
 	@echo ""
 	@echo "$(GREEN)🚀 Backend running on port $(BACKEND_PORT)$(NC)"
@@ -75,7 +75,7 @@ be: install-backend
 	@echo "   POST /api/stop-webcam-processing  (live webcam)"
 	@echo "   GET  /api/status"
 	@echo ""
-	@node server.js
+	@npm start 2>&1 | tee /tmp/backend.log
 
 # ============================================================
 # Backend (Refactored - EXPERIMENTAL/WIP)
@@ -183,22 +183,27 @@ info:
 
 process-info:
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
-	@echo "$(BLUE)Roboflow PPE Detection – How It Works$(NC)"
+	@echo "$(BLUE)Local PPE Detection – How It Works$(NC)"
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
 	@echo ""
 	@echo "$(GREEN)Pipeline:$(NC)"
 	@echo "  1️⃣  Backend extracts frames using FFmpeg (2 FPS)"
-	@echo "  2️⃣  Frames sent to Roboflow PPE model API"
-	@echo "  3️⃣  Detections received from Roboflow"
-	@echo "  4️⃣  Broadcast to frontend via WebSocket"
-	@echo "  5️⃣  Vue UI draws bounding boxes on video"
-	@echo "  6️⃣  Real-time alerts in violations feed"
+	@echo "  2️⃣  Frames sent to Python inference service"
+	@echo "  3️⃣  Local models run: YOLOv8l (person) + hardhat-best.pt (PPE)"
+	@echo "  4️⃣  Detections returned immediately (no API calls)"
+	@echo "  5️⃣  Broadcast to frontend via WebSocket"
+	@echo "  6️⃣  Vue UI draws bounding boxes on video"
+	@echo "  7️⃣  Real-time alerts in violations feed"
 	@echo ""
-	@echo "$(YELLOW)Required Configuration (.env):$(NC)"
-	@echo "  ROBOFLOW_API_KEY=your_api_key_here"
-	@echo "  ROBOFLOW_MODEL=safety/ppe-detection/1"
-	@echo "  ROBOFLOW_VERSION=2"
-	@echo "  VIDEO_FILE=$(VIDEO_FILE)"
+	@echo "$(YELLOW)Models:$(NC)"
+	@echo "  📦 YOLOv8l - Person detection (models/yolov8l.pt)"
+	@echo "  📦 hardhat-best.pt - PPE detection (models/hardhat-best.pt)"
+	@echo ""
+	@echo "$(YELLOW)Benefits:$(NC)"
+	@echo "  ✅ No API calls - instant detection"
+	@echo "  ✅ No rate limits"
+	@echo "  ✅ Works offline"
+	@echo "  ✅ Lower latency"
 	@echo ""
 	@echo "$(YELLOW)API Endpoints:$(NC)"
 	@echo "  GET  /video              - Stream video file"
@@ -210,7 +215,7 @@ process-info:
 	@echo ""
 	@echo "$(YELLOW)WebSocket:$(NC)"
 	@echo "  ws://localhost:$(BACKEND_PORT)"
-	@echo "  Messages: PPE_VIOLATION, PROCESSING_COMPLETE"
+	@echo "  Messages: PPE_DETECTION_BATCH_VIDEO, PPE_DETECTION_BATCH_WEBCAM"
 	@echo ""
 
 # ============================================================

@@ -26,6 +26,9 @@ try:
     hardhat_model = YOLO("models/hardhat-best.pt")
     print("[✓] Hardhat-best.pt loaded", file=sys.stderr)
     
+    print("[✓] Models ready for inference", file=sys.stderr)
+    sys.stderr.flush()
+    
 except Exception as e:
     print(f"[ERROR] Failed to load models: {e}", file=sys.stderr)
     sys.exit(1)
@@ -133,11 +136,11 @@ def process_frame(frame_data, conf_threshold=0.5):
 
 def main():
     """Main entry point for processing frames from stdin"""
-    print("[INFO] Local Inference Service Ready", file=sys.stderr)
+    print("[✓] Local Inference Service Ready", file=sys.stderr)
+    sys.stderr.flush()
     
     while True:
         try:
-            # Read line from stdin (expects JSON with base64 image)
             line = input()
             if not line:
                 continue
@@ -146,20 +149,20 @@ def main():
             image_data = data.get('image')
             conf_threshold = data.get('confidence', 0.5)
             
-            # Process frame
             result = process_frame(image_data, conf_threshold)
             
-            # Send result to stdout
             print(json.dumps(result))
             sys.stdout.flush()
             
         except json.JSONDecodeError:
             print(json.dumps({'success': False, 'error': 'Invalid JSON'}))
+            sys.stdout.flush()
         except KeyboardInterrupt:
             print("[INFO] Service stopped", file=sys.stderr)
             break
         except Exception as e:
             print(json.dumps({'success': False, 'error': str(e)}))
+            sys.stdout.flush()
 
 if __name__ == '__main__':
     main()
