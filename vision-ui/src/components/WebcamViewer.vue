@@ -177,11 +177,15 @@ const drawAnnotations = () => {
   
   // Get latest frame annotations
   const latestFrame = Math.max(...displayedAnnotations.value.map(a => a.frame || 0));
-  const currentFrameAnnotations = displayedAnnotations.value.filter(a => 
-    a.frame === latestFrame && a.boundingBox && a.type?.toLowerCase() !== 'person'
-  );
+  const currentFrameAnnotations = displayedAnnotations.value.filter(a => {
+    const type = a.type?.toLowerCase();
+    // Include person detections, exclude head detections
+    return a.frame === latestFrame && 
+           a.boundingBox && 
+           type !== 'head';
+  });
   
-  // Draw each annotation (excluding person detections)
+  // Draw each annotation (excluding head detections, including person)
   currentFrameAnnotations.forEach((annotation) => {
     const box = annotation.boundingBox;
     if (!box || typeof box.x !== 'number' || typeof box.y !== 'number') return;
@@ -476,18 +480,18 @@ const setupAnnotationListener = () => {
           }
         });
         
-        // Filter predictions for CANVAS display (exclude person and low-confidence hardhat)
+        // Filter predictions for CANVAS display (include person, exclude head)
         const HARDHAT_MIN_CONFIDENCE = 0.8;
         const filteredPredictions = data.predictions.filter(p => {
           const normalizedType = p.type.toLowerCase().replace(/[_-]/g, '');
           
-          // Exclude person detections from canvas visualization
-          if (normalizedType.includes('person')) {
+          // Exclude head detections from canvas visualization (redundant with hardhat/helmet)
+          if (normalizedType.includes('head') && !normalizedType.includes('hardhat') && !normalizedType.includes('helmet')) {
             return false;
           }
           
           // Apply 80% confidence filter only to hard hat/helmet detections for display
-          if (normalizedType.includes('hardhat') || normalizedType.includes('helmet') || normalizedType.includes('head')) {
+          if (normalizedType.includes('hardhat') || normalizedType.includes('helmet')) {
             if (p.confidence < HARDHAT_MIN_CONFIDENCE) {
               console.log(`[Filtered from display] ${p.type}: ${(p.confidence * 100).toFixed(1)}% < 80%`);
               return false;

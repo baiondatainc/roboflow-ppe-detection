@@ -1,4 +1,4 @@
-.PHONY: help backend frontend all install clean info process-info
+.PHONY: help backend frontend all install clean info process-info reset-camera
 
 # Colors
 BLUE := \033[0;34m
@@ -26,6 +26,7 @@ help:
 	@echo "  $(GREEN)make frontend$(NC)      - Start frontend UI (port 5173+)"
 	@echo "  $(GREEN)make all$(NC)           - Start backend + frontend"
 	@echo "  $(GREEN)make webcam$(NC)        - Start backend for webcam PPE detection"
+	@echo "  $(GREEN)make reset-camera$(NC)  - Reset camera (fixes device locks)"
 	@echo "  $(GREEN)make kill$(NC)          - Kill all running processes"
 	@echo "  $(GREEN)make install$(NC)       - Install all dependencies"
 	@echo "  $(GREEN)make info$(NC)          - Show system info"
@@ -235,7 +236,7 @@ kill:
 	@pkill -f ffmpeg || true
 	@sleep 1
 	@echo "$(GREEN)✅ All processes stopped$(NC)"
-	@kill -9 $(lsof -t -i :8080) || true
+	@kill -9 $(lsof -t -i :3001) || true
 
 webcam: install-backend
 	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
@@ -255,6 +256,16 @@ webcam: install-backend
 	@echo "  4. Watch live PPE detections in real-time"
 	@echo ""
 	@node server.js
+
+# ============================================================
+# Camera Reset
+# ============================================================
+reset-camera:
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo "$(BLUE)Resetting Camera and Clearing Stuck Processes...$(NC)"
+	@echo "$(BLUE)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━$(NC)"
+	@echo ""
+	@./reset-camera.sh
 
 # ============================================================
 # Default
