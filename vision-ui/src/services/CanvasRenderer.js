@@ -146,6 +146,76 @@ export class CanvasRenderer {
     ctx.fillText(confidenceText, clampedX + 8, labelY + 42);
   }
 
+  drawPPEAnnotation(ctx, annotation, boxCoords) {
+    const { clampedX, clampedY, clampedWidth, clampedHeight } = boxCoords;
+    
+    // Only show PPE status for person detections
+    if (!annotation.type.toLowerCase().includes('person')) {
+      return;
+    }
+
+    const ppeStatus = annotation.ppeStatus || {};
+    const ppeBoxX = clampedX;
+    const ppeBoxY = clampedY + clampedHeight + 10;
+    const ppeBoxWidth = Math.max(clampedWidth, 200);
+    const ppeBoxHeight = 85;
+
+    // Semi-transparent background with gradient
+    const gradient = ctx.createLinearGradient(ppeBoxX, ppeBoxY, ppeBoxX, ppeBoxY + ppeBoxHeight);
+    gradient.addColorStop(0, 'rgba(6, 182, 212, 0.9)');
+    gradient.addColorStop(1, 'rgba(6, 182, 212, 0.7)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(ppeBoxX, ppeBoxY, ppeBoxWidth, ppeBoxHeight);
+
+    // Border with accent color
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(ppeBoxX, ppeBoxY, ppeBoxWidth, ppeBoxHeight);
+
+    // PPE Status Title
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 13px "Segoe UI", Arial, sans-serif';
+    ctx.fillText('👤 PPE EQUIPMENT STATUS', ppeBoxX + 8, ppeBoxY + 17);
+
+    // Helper function to draw PPE item
+    const drawPPEItem = (label, emoji, isPresent, x, y) => {
+      const statusColor = isPresent ? '#10b981' : '#ef4444';
+      const statusText = isPresent ? '✓' : '✗';
+      
+      ctx.fillStyle = statusColor;
+      ctx.font = 'bold 11px "Segoe UI", Arial, sans-serif';
+      ctx.fillText(`${emoji} ${statusText}`, x, y);
+    };
+
+    // Draw PPE items in a row
+    const itemY = ppeBoxY + 35;
+    const itemSpacing = ppeBoxWidth / 3;
+    
+    drawPPEItem('Head', '🧢', 
+      ppeStatus.hardhat?.present || ppeStatus.helmet?.present || ppeStatus.head?.present,
+      ppeBoxX + 8, itemY);
+    
+    drawPPEItem('Hands', '�',
+      ppeStatus.gloves?.present || ppeStatus.hand?.present,
+      ppeBoxX + itemSpacing, itemY);
+    
+    drawPPEItem('Vest', '🦺',
+      ppeStatus.vest?.present || ppeStatus.safety_vest?.present,
+      ppeBoxX + itemSpacing * 2 - 20, itemY);
+
+    // Compliance status line
+    const hasHead = ppeStatus.hardhat?.present || ppeStatus.helmet?.present || ppeStatus.head?.present;
+    const hasHands = ppeStatus.gloves?.present || ppeStatus.hand?.present;
+    const hasVest = ppeStatus.vest?.present || ppeStatus.safety_vest?.present;
+    const isCompliant = hasHead && hasHands && hasVest;
+
+    const complianceColor = isCompliant ? '#10b981' : '#ef4444';
+    const complianceText = isCompliant ? '✓ COMPLIANT' : '✗ NON-COMPLIANT';
+    
+    ctx.fillStyle = complianceColor;
+    ctx.font = 'bold 11px "Segoe UI", Arial, sans-serif';
+    ctx.fillText(complianceText, ppeBoxX + 8, ppeBoxY + 65);
+  }
   drawAnnotations(ctx, annotations, canvas) {
     annotations.forEach(annotation => {
       if (!annotation.boundingBox) return;
@@ -162,6 +232,8 @@ export class CanvasRenderer {
 
       if (boxCoords) {
         this.drawLabel(ctx, annotation.type, annotation.confidence, boxCoords, color);
+        // Draw PPE annotation for person detections
+        this.drawPPEAnnotation(ctx, annotation, boxCoords);
       }
     });
   }

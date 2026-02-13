@@ -17,6 +17,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.raw({ type: 'image/*', limit: '50mb' }));
 
 const PORT = process.env.PORT || 3001;
 const VIDEO_FILE = process.env.VIDEO_FILE || "./ppe-upload-video-new1.mp4";
@@ -819,6 +820,139 @@ app.get("/stats", (_, res) => {
     queueSize: processingQueue.length,
     inferenceReady: inferenceReady
   });
+});
+
+/* --------------- IMAGE DETECTION --------------- */
+
+app.post("/api/detect-image", express.raw({ type: 'application/octet-stream', limit: '50mb' }), async (req, res) => {
+  try {
+    if (!inferenceReady) {
+      return res.status(503).json({ success: false, error: "Inference service not ready" });
+    }
+
+    let imageBuffer;
+
+    // Handle multipart/form-data with file upload
+    const contentType = req.get('content-type');
+    if (contentType && contentType.includes('multipart/form-data')) {
+      // For multipart, we need the raw body
+      // This is a simplified approach - the image bytes should be in the request body
+      imageBuffer = req.body;
+    } else if (Buffer.isBuffer(req.body)) {
+      // Direct binary image data
+      imageBuffer = req.body;
+    } else {
+      // Try to get from body as Buffer
+      imageBuffer = Buffer.from(req.body);
+    }
+
+    if (!imageBuffer || imageBuffer.length === 0) {
+      return res.status(400).json({ success: false, error: "No image data provided" });
+    }
+
+    console.log(`📷 Processing image: ${imageBuffer.length} bytes`);
+
+    // Send to Python inference service
+    const base64Image = imageBuffer.toString("base64");
+    const request = {
+      image: base64Image,
+      confidence: CONFIDENCE
+    };
+
+    const result = await new Promise((resolve) => {
+      if (!pythonInferenceProcess || !pythonInferenceProcess.stdout || !inferenceReady) {
+        resolve({ success: false, detections: [] });
+        return;
+      }
+
+      const responseHandler = (data) => {
+        try {
+          const result = JSON.parse(data.toString());
+          if (result.success) {
+            pythonInferenceProcess.stdout.removeListener("data", responseHandler);
+            resolve(result);
+          }
+        } catch (error) {
+          console.error("❌ Parse error:", error.message);
+        }
+      };
+
+      pythonInferenceProcess.stdout.once("data", responseHandler);
+
+      try {
+        pythonInferenceProcess.stdin.write(JSON.stringify(request) + "\n");
+
+        setTimeout(() => {
+          pythonInferenceProcess.stdout.removeListener("data", responseHandler);
+          resolve({ success: false, detections: [] });
+        }, 10000);
+      } catch (error) {
+        resolve({ success: false, detections: [] });
+      }
+    });
+
+    if (!result.success) {
+      return res.status(500).json({ success: false, error: "Detection failed" });
+    }
+
+    const predictions = result.detections || [];
+    
+    let detectedFrameWidth = frameWidth;
+    let detectedFrameHeight = frameHeight;
+    
+    if (result.frame_width && result.frame_height) {
+      detectedFrameWidth = result.frame_width;
+      detectedFrameHeight = result.frame_height;
+    }
+
+    console.log(`✅ Image: ${predictions.length} detections`);
+
+    // Return the detection results directly to the client
+    res.json({
+      success: true,
+      source: "local",
+      frame: 0,
+      frameWidth: detectedFrameWidth,
+      frameHeight: detectedFrameHeight,
+      count: predictions.length,
+      predictions: predictions.map(p => ({
+        type: p.class,
+        confidence: p.confidence,
+        boundingBox: {
+          x: p.x,
+          y: p.y,
+          width: p.width,
+          height: p.height
+        }
+      })),
+      timestamp: new Date().toISOString()
+    });
+
+    // Also broadcast to WebSocket clients
+    broadcast({
+      eventType: "PPE_DETECTION_IMAGE",
+      source: "local",
+      frame: 0,
+      frameWidth: detectedFrameWidth,
+      frameHeight: detectedFrameHeight,
+      count: predictions.length,
+      predictions: predictions.map(p => ({
+        type: p.class,
+        confidence: p.confidence,
+        boundingBox: {
+          x: p.x,
+          y: p.y,
+          width: p.width,
+          height: p.height
+        }
+      })),
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error("❌ Image detection error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 /* ---------------- SHUTDOWN ---------------- */

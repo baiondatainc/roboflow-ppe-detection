@@ -3,6 +3,7 @@ import { ref } from "vue";
 import Dashboard from "./components/Dashboard.vue";
 import WebcamViewer from "./components/WebcamViewer.vue";
 import StreamViewer from "./components/StreamViewer.vue";
+import ImageViewer from "./components/ImageViewer.vue";
 
 const activeTab = ref("dashboard");
 </script>
@@ -40,6 +41,12 @@ const activeTab = ref("dashboard");
       >
         <i class="fas fa-film"></i> Video Stream
       </button>
+      <button 
+        :class="['nav-btn', { active: activeTab === 'image' }]"
+        @click="activeTab = 'image'"
+      >
+        <i class="fas fa-image"></i> Image
+      </button>
     </nav>
 
     <main class="app-content">
@@ -47,6 +54,7 @@ const activeTab = ref("dashboard");
         <Dashboard v-if="activeTab === 'dashboard'" />
         <WebcamViewer v-else-if="activeTab === 'webcam'" />
         <StreamViewer v-else-if="activeTab === 'stream'" />
+        <ImageViewer v-else-if="activeTab === 'image'" />
       </keep-alive>
     </main>
   </div>
