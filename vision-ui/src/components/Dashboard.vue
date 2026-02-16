@@ -33,7 +33,47 @@ const topViolationTypes = computed(() => {
     .map(([type, count]) => ({ type, count }));
 });
 
+const generateRandomStats = () => {
+  const violations = [
+    { type: 'no_hardhat', count: Math.floor(Math.random() * 30) + 10 },
+    { type: 'no_gloves', count: Math.floor(Math.random() * 25) + 5 },
+    { type: 'no_vest', count: Math.floor(Math.random() * 20) + 8 },
+    { type: 'no_safety_vest', count: Math.floor(Math.random() * 15) + 3 },
+    { type: 'improper_ppe', count: Math.floor(Math.random() * 12) + 2 }
+  ];
+
+  const locations = [
+    { location: 'Floor A', count: Math.floor(Math.random() * 25) + 10 },
+    { location: 'Floor B', count: Math.floor(Math.random() * 20) + 8 },
+    { location: 'Warehouse', count: Math.floor(Math.random() * 18) + 5 },
+    { location: 'Assembly', count: Math.floor(Math.random() * 15) + 5 }
+  ];
+
+  const byType = {};
+  const byLocation = {};
+  let total = 0;
+
+  violations.forEach(v => {
+    byType[v.type] = v.count;
+    total += v.count;
+  });
+
+  locations.forEach(l => {
+    byLocation[l.location] = l.count;
+  });
+
+  violationStats.value = {
+    total,
+    recentCount: Math.floor(Math.random() * 5) + 1,
+    byType,
+    byLocation
+  };
+};
+
 onMounted(async () => {
+  // Generate initial random data
+  generateRandomStats();
+
   try {
     await websocketService.connect();
   } catch (error) {

@@ -16,8 +16,7 @@ const activeTab = ref("dashboard");
         <div class="logo-section">
           <img src="/logo.jpeg" alt="Sutherland Logo" class="sutherland-logo">
           <div class="header-text">
-            <h1>PPE Detection System</h1>
-            <span class="subtitle">Powered by Sutherland</span>
+            <h1>Sutherland Vision Analytics</h1>            
           </div>
         </div>
       </div>
@@ -98,7 +97,6 @@ const activeTab = ref("dashboard");
 .sutherland-logo {
   height: 50px;
   width: auto;
-  filter: brightness(0) invert(1);
 }
 
 .header-text {
