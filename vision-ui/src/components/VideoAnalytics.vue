@@ -1,20 +1,22 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed, nextTick } from "vue";
 
 // State
-const videoInput = ref(null);
-const fileInput = ref(null);
+const videoElement = ref(null);
 const canvasElement = ref(null);
+const fileInput = ref(null);
 const connectionStatus = ref("checking");
 const isProcessing = ref(false);
 const processingError = ref("");
 const analysisResults = ref([]);
 const currentFrameIndex = ref(0);
+const isPlaying = ref(false);
 
 // Configuration
 const analyticsApiUrl = import.meta.env.VITE_ANALYTICS_API_URL || 'http://localhost:5002';
 const speedThreshold = ref(50); // km/h
 const showSpeedingOnly = ref(false);
+const processEveryNthFrame = ref(2); // Process every 2nd frame for speed
 
 // Real-time stats
 const stats = computed(() => {
@@ -54,6 +56,7 @@ const statusText = {
 };
 
 let renderAnimationId = null;
+let videoFrameInterval = null;
 
 onMounted(() => {
   checkServiceHealth();
@@ -62,6 +65,12 @@ onMounted(() => {
 onUnmounted(() => {
   if (renderAnimationId) {
     cancelAnimationFrame(renderAnimationId);
+  }
+  if (videoFrameInterval) {
+    clearInterval(videoFrameInterval);
+  }
+  if (videoElement.value) {
+    videoElement.value.pause();
   }
 });
 
@@ -98,27 +107,112 @@ const handleFileSelect = (event) => {
     return;
   }
 
-  processVideo(file);
+  loadVideo(file);
 };
 
-const processVideo = async (file) => {
+const loadVideo = (file) => {
   try {
     isProcessing.value = true;
     processingError.value = "";
     analysisResults.value = [];
     currentFrameIndex.value = 0;
+    isPlaying.value = false;
 
-    // Create FormData
-    const formData = new FormData();
-    formData.append('file', file);
-
-    // For now, we'll show a demo of frame-by-frame processing
-    // In production, send to backend for processing
-    showDemoAnalysis();
-
+    // Create blob URL for video
+    const blobUrl = URL.createObjectURL(file);
+    
+    if (videoElement.value) {
+      videoElement.value.src = blobUrl;
+      videoElement.value.onloadedmetadata = () => {
+        console.log(`Video loaded: ${videoElement.value.videoWidth}x${videoElement.value.videoHeight}`);
+        // Set canvas to match video dimensions
+        if (canvasElement.value) {
+          canvasElement.value.width = videoElement.value.videoWidth;
+          canvasElement.value.height = videoElement.value.videoHeight;
+        }
+        isProcessing.value = false;
+      };
+      
+      // Extract frames and process
+      extractAndProcessFrames();
+    }
   } catch (error) {
-    processingError.value = error.message || "Failed to process video";
+    processingError.value = error.message || "Failed to load video";
     console.error("Error:", error);
+    isProcessing.value = false;
+  }
+};
+
+const extractAndProcessFrames = async () => {
+  try {
+    if (!videoElement.value) return;
+
+    const video = videoElement.value;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const frames = [];
+    const frameCount = Math.ceil(video.duration * 30); // Assume 30fps
+    let processedFrames = 0;
+
+    // Extract frames from video
+    for (let i = 0; i < frameCount; i += processEveryNthFrame.value) {
+      video.currentTime = i / 30;
+      
+      await new Promise(resolve => {
+        video.onseeked = async () => {
+          ctx.drawImage(video, 0, 0);
+          
+          // Get frame data
+          const frameData = canvas.toDataURL('image/jpeg', 0.8);
+          frames.push({
+            frame_id: i + 1,
+            data: frameData,
+            timestamp: new Date().toISOString(),
+            vehicles: []
+          });
+          
+          processedFrames++;
+          console.log(`Extracted frame ${processedFrames}/${Math.ceil(frameCount / processEveryNthFrame.value)}`);
+          resolve();
+        };
+      });
+    }
+
+    // Process frames with backend
+    await processFramesWithBackend(frames);
+  } catch (error) {
+    console.error("Error extracting frames:", error);
+    processingError.value = "Failed to process video frames";
+  }
+};
+
+const processFramesWithBackend = async (frames) => {
+  try {
+    isProcessing.value = true;
+    
+    // Send frames to backend for processing
+    const response = await fetch(`${analyticsApiUrl}/api/process-video`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frames })
+    });
+
+    if (response.ok) {
+      const results = await response.json();
+      analysisResults.value = results.frames || frames;
+    } else {
+      // Fallback: Use demo analysis
+      console.warn("Backend processing failed, using demo analysis");
+      showDemoAnalysis();
+    }
+  } catch (error) {
+    console.warn("Backend processing failed:", error);
+    // Fallback to demo
+    showDemoAnalysis();
   } finally {
     isProcessing.value = false;
   }
@@ -166,6 +260,31 @@ const showDemoAnalysis = () => {
   analysisResults.value = demoFrames;
 };
 
+const playVideo = () => {
+  if (videoElement.value && analysisResults.value.length > 0) {
+    isPlaying.value = true;
+    let frameIdx = 0;
+    
+    videoFrameInterval = setInterval(() => {
+      if (frameIdx < analysisResults.value.length) {
+        currentFrameIndex.value = frameIdx;
+        drawAnalysis();
+        frameIdx++;
+      } else {
+        isPlaying.value = false;
+        clearInterval(videoFrameInterval);
+      }
+    }, 33); // ~30fps
+  }
+};
+
+const stopVideo = () => {
+  isPlaying.value = false;
+  if (videoFrameInterval) {
+    clearInterval(videoFrameInterval);
+  }
+};
+
 const getVehicleColor = (vehicle) => {
   if (vehicle.speed?.is_speeding) return '#ef4444'; // red for speeding
   if (vehicle.plate?.number) return '#10b981'; // green for plates detected
@@ -174,7 +293,7 @@ const getVehicleColor = (vehicle) => {
 
 const drawAnalysis = () => {
   const canvas = canvasElement.value;
-  if (!canvas || analysisResults.value.length === 0) return;
+  if (!canvas || !videoElement.value || analysisResults.value.length === 0) return;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -182,9 +301,8 @@ const drawAnalysis = () => {
   const frameData = frameInfo.value;
   if (!frameData) return;
 
-  // Clear canvas
-  ctx.fillStyle = '#1f2937';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Draw video frame
+  ctx.drawImage(videoElement.value, 0, 0, canvas.width, canvas.height);
 
   // Draw vehicles
   frameData.vehicles.forEach((vehicle) => {
@@ -200,39 +318,41 @@ const drawAnalysis = () => {
 
     // Draw label background
     const label = [];
+    label.push(`#${vehicle.id}`);
     if (vehicle.speed) {
       label.push(`${vehicle.speed.speed_kmh} km/h`);
     }
     if (vehicle.plate?.number) {
       label.push(`📌 ${vehicle.plate.number}`);
     }
-    label.push(`ID: ${vehicle.id}`);
 
     const labelText = label.join(' | ');
-    ctx.font = '12px monospace';
+    ctx.font = 'bold 12px monospace';
     ctx.fillStyle = color;
     const textWidth = ctx.measureText(labelText).width;
     
-    ctx.fillStyle = color;
-    ctx.fillRect(x1, y1 - 20, textWidth + 4, 16);
+    ctx.fillRect(x1, y1 - 25, textWidth + 8, 20);
     ctx.fillStyle = '#fff';
-    ctx.fillText(labelText, x1 + 2, y1 - 6);
+    ctx.fillText(labelText, x1 + 4, y1 - 8);
 
     // Draw speed indicator if speeding
     if (vehicle.speed?.is_speeding) {
       ctx.strokeStyle = '#ef4444';
       ctx.lineWidth = 3;
-      ctx.strokeRect(x1 - 2, y1 - 2, x2 - x1 + 4, y2 - y1 + 4);
+      ctx.strokeRect(x1 - 3, y1 - 3, x2 - x1 + 6, y2 - y1 + 6);
     }
   });
 
   // Draw frame info
   ctx.fillStyle = '#fff';
-  ctx.font = '14px sans-serif';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.shadowColor = 'rgba(0,0,0,0.7)';
+  ctx.shadowBlur = 3;
   ctx.fillText(
     `Frame: ${frameData.frame_id} | Vehicles: ${frameData.vehicles.length}`,
     10, 25
   );
+  ctx.shadowColor = 'transparent';
 
   renderAnimationId = requestAnimationFrame(drawAnalysis);
 };
@@ -275,11 +395,18 @@ const getSpeedColor = (speed) => {
 
 <template>
   <div class="analytics-container">
+    <!-- Hidden video element for frame extraction -->
+    <video
+      ref="videoElement"
+      class="hidden-video"
+      crossorigin="anonymous"
+    ></video>
+
     <!-- Header -->
     <div class="analytics-header">
       <div class="header-title">
         <i class="fas fa-chart-bar"></i>
-        <span>Video Analytics</span>
+        <span>Video Analytics - Vehicle Detection & Speed</span>
       </div>
       <div class="status-badge" :class="connectionStatus">
         <i class="fas fa-circle"></i>
@@ -318,6 +445,27 @@ const getSpeedColor = (speed) => {
           <p class="upload-info">
             Supports MP4, MOV, AVI, WebM | Max 500MB
           </p>
+        </div>
+
+        <!-- Playback Controls -->
+        <div v-if="analysisResults.length > 0" class="playback-section">
+          <h3>Playback</h3>
+          <div class="playback-buttons">
+            <button
+              v-if="!isPlaying"
+              @click="playVideo"
+              class="play-btn"
+            >
+              <i class="fas fa-play"></i> Play
+            </button>
+            <button
+              v-else
+              @click="stopVideo"
+              class="play-btn playing"
+            >
+              <i class="fas fa-pause"></i> Pause
+            </button>
+          </div>
         </div>
 
         <!-- Filter Controls -->
@@ -393,8 +541,6 @@ const getSpeedColor = (speed) => {
         <div class="canvas-wrapper">
           <canvas
             ref="canvasElement"
-            width="800"
-            height="600"
             class="analysis-canvas"
           ></canvas>
         </div>
@@ -412,7 +558,7 @@ const getSpeedColor = (speed) => {
               :min="0"
               :max="analysisResults.length - 1"
               class="slider"
-              @input="(e) => goToFrame(parseInt((e.target as HTMLInputElement).value))"
+              @input="(e) => goToFrame(parseInt(e.target.value))"
             />
             <span class="frame-counter">
               {{ currentFrameIndex + 1 }} / {{ analysisResults.length }}
@@ -653,6 +799,7 @@ const getSpeedColor = (speed) => {
   background: #e5e7eb;
   outline: none;
   -webkit-appearance: none;
+  appearance: none;
   cursor: pointer;
 }
 

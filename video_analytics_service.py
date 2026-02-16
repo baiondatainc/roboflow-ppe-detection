@@ -23,13 +23,14 @@ from pathlib import Path
 import logging
 import threading
 import queue
+import yaml
 
 # Import YOLOv8
 from ultralytics import YOLO
 
 # ByteTrack imports
 try:
-    from boxmot import BYTETracker
+    from boxmot import ByteTrack
     BYTETRACK_AVAILABLE = True
 except ImportError:
     BYTETRACK_AVAILABLE = False
@@ -44,7 +45,39 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# ==================== Configuration ====================
+# ==================== Configuration Loading ====================
+
+def load_bytetrack_config():
+    """Load ByteTrack configuration from YAML file"""
+    config_path = Path('./bytetrack.yaml')
+    default_config = {
+        'track_thresh': 0.5,
+        'track_buffer': 30,
+        'match_thresh': 0.8,
+        'max_age': 30,
+        'min_hits': 3,
+        'n_init': 3,
+        'use_byte': True,
+        'filter_by_class': [2, 5, 7],
+        'min_confidence': 0.45
+    }
+    
+    if config_path.exists():
+        try:
+            with open(config_path, 'r') as f:
+                loaded_config = yaml.safe_load(f) or {}
+                default_config.update(loaded_config)
+                logger.info(f"✅ Loaded ByteTrack config from {config_path}")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to load {config_path}: {e}. Using defaults.")
+    else:
+        logger.warning(f"⚠️  {config_path} not found. Using default configuration.")
+    
+    return default_config
+
+BYTETRACK_CONFIG = load_bytetrack_config()
+
+# ==================== Environment Configuration ====================
 VIDEO_ANALYTICS_PORT = int(os.getenv('VIDEO_ANALYTICS_PORT', 5002))
 PLATE_API_URL = os.getenv('VITE_PLATE_API_URL', 'http://localhost:5001')
 PLATE_API_TOKEN = os.getenv('VITE_PLATE_API_TOKEN', '')
@@ -93,9 +126,19 @@ class ModelManager:
             logger.info("✅ YOLOv8 loaded successfully")
             
             if BYTETRACK_AVAILABLE:
-                logger.info("Initializing ByteTrack...")
-                self.tracker = BYTETracker(track_thresh=0.5)
-                logger.info("✅ ByteTrack initialized")
+                logger.info("Initializing ByteTrack with configuration...")
+                # Initialize ByteTracker with config parameters
+                self.tracker = ByteTrack(
+                    track_thresh=BYTETRACK_CONFIG.get('track_thresh', 0.5),
+                    track_buffer=BYTETRACK_CONFIG.get('track_buffer', 30),
+                    match_thresh=BYTETRACK_CONFIG.get('match_thresh', 0.8),
+                    frame_rate=FRAME_RATE
+                )
+                logger.info("✅ ByteTrack initialized with custom configuration:")
+                logger.info(f"   - track_thresh: {BYTETRACK_CONFIG.get('track_thresh', 0.5)}")
+                logger.info(f"   - track_buffer: {BYTETRACK_CONFIG.get('track_buffer', 30)} frames")
+                logger.info(f"   - match_thresh: {BYTETRACK_CONFIG.get('match_thresh', 0.8)}")
+                logger.info(f"   - frame_rate: {FRAME_RATE} fps")
             else:
                 logger.warning("ByteTrack not available - tracking disabled")
         except Exception as e:
