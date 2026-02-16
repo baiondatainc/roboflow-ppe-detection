@@ -15,3 +15,10 @@ pillow>=10.0.0
 
 # Optional but recommended for better experience
 python-dotenv>=1.0.0
+
+# Video Analytics - Flask API
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Video Analytics - Tracking
+boxmot>=10.8.0  # ByteTrack and other trackers
